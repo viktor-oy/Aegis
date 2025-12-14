@@ -1,0 +1,48 @@
+[project]
+name = "aegis"
+version = "0.1.0"
+description = "Aegis GPU/AI infrastructure failure control plane"
+requires-python = ">=3.13"
+dependencies = [
+  "grpcio==1.67.1",
+  "grpcio-tools==1.67.1",
+  "protobuf==5.28.3",
+  "aiokafka==0.12.0",
+  "pydantic==2.10.4",
+  "httpx==0.28.1",
+  "opentelemetry-api==1.29.0",
+  "opentelemetry-sdk==1.29.0",
+  "opentelemetry-exporter-otlp==1.29.0",
+  "tenacity==9.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "pytest-cov==6.0.0",
+  "mypy==1.14.1",
+  "ruff==0.8.6"
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["services/agent", "services/composer", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["aegis_agent", "aegis_composer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --cov=services --cov-report=term-missing"
+markers = [
+  "integration: requires local dependencies",
+  "e2e: requires full Kubernetes stack",
+  "chaos: requires failure injection stack"
+]
+
