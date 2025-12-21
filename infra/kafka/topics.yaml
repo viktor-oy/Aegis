@@ -1,0 +1,38 @@
+topics:
+  - name: aegis.incident.detected
+    partitions: 12
+    replication_factor: 3
+    retention_ms: 604800000
+  - name: aegis.diagnostics.requested
+    partitions: 12
+    replication_factor: 3
+    retention_ms: 604800000
+  - name: aegis.diagnostics.collected
+    partitions: 12
+    replication_factor: 3
+    retention_ms: 604800000
+  - name: aegis.postmortem.requested
+    partitions: 12
+    replication_factor: 3
+    retention_ms: 1209600000
+  - name: aegis.postmortem.generated
+    partitions: 12
+    replication_factor: 3
+    retention_ms: 1209600000
+  - name: aegis.postmortem.delivery.requested
+    partitions: 12
+    replication_factor: 3
+    retention_ms: 1209600000
+  - name: aegis.postmortem.delivery.status
+    partitions: 12
+    replication_factor: 3
+    retention_ms: 1209600000
+  - name: aegis.postmortem.delivery.retry
+    partitions: 6
+    replication_factor: 3
+    retention_ms: 1209600000
+  - name: aegis.postmortem.delivery.dlq
+    partitions: 3
+    replication_factor: 3
+    retention_ms: 2592000000
+

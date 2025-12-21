@@ -29,10 +29,10 @@ Kubernetes is the target runtime. Helm and Kustomize install standalone Aegis se
 Use the three-layer model:
 
 1. Developer filesystem stores the repository.
-2. VS Code Devcontainer provides pinned toolchains and CLIs.
+2. [mise](https://mise.jdx.dev/) provides pinned toolchains and CLIs.
 3. Kind, Minikube, or k3d runs the actual workloads.
 
-From inside the Devcontainer:
+After running `mise install`:
 
 ```sh
 make kind-up
@@ -106,11 +106,11 @@ Helm owns the reusable cloud chart under `infra/helm/aegis`. Kustomize overlays 
 
 ## Technologies Used
 
-Languages and protocols: Go, Python 3.13, protobuf, gRPC, JSON event envelopes, Markdown.
+Languages and protocols: Go, Python 3.14.1, protobuf, gRPC, JSON event envelopes, Markdown.
 
 Distributed systems: consistent hashing with virtual nodes, Redis TTL membership leases, Redis incident locks, bounded queues, min-heap heartbeat expiry, deterministic incident IDs, idempotent Kafka consumers, retry and DLQ topics.
 
-Infrastructure: Kubernetes, Helm, Kustomize, Kind, Minikube/k3d-compatible overlays, Tilt, KEDA, Terraform, VS Code Devcontainers.
+Infrastructure: Kubernetes, Helm, Kustomize, Kind, Minikube/k3d-compatible overlays, Tilt, KEDA, Terraform, mise.
 
 Data and messaging: Kafka, Redis, PostgreSQL, S3-compatible storage, MinIO for local validation.
 
@@ -121,4 +121,3 @@ AI integration: OpenAI-compatible endpoint such as vLLM, KServe, Triton-adjacent
 Security and hardening: Kubernetes Secrets, optional gRPC mTLS wiring, Kafka authentication and ACL notes, Redis authentication, NetworkPolicy, least-privilege ServiceAccounts, rate limiting, secret rotation notes.
 
 Version pins are tracked in `VERSION_LEDGER.md`.
-

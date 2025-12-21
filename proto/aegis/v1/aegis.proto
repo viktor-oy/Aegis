@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package aegis.v1;
+
+option go_package = "github.com/aegis/aegis/gen/go/aegis/v1;aegisv1";
+
+service ControlPlaneTelemetry {
+  rpc StreamTelemetry(stream AgentTelemetry) returns (stream ControlPlaneDirective);
+  rpc SubmitDiagnostics(DiagnosticBundle) returns (Ack);
+}
+
+service AgentDiagnostics {
+  rpc TriggerDiagnostics(DiagnosticRequest) returns (DiagnosticBundle);
+}
+
+message AgentTelemetry {
+  string worker_id = 1;
+  string timestamp = 2;
+  double gpu_utilization = 3;
+  uint64 vram_used_bytes = 4;
+  uint64 vram_total_bytes = 5;
+  double temperature_celsius = 6;
+  double power_watts = 7;
+  uint64 ecc_error_count = 8;
+  double inference_latency_ms = 9;
+  uint64 local_queue_depth = 10;
+  bool model_server_healthy = 11;
+  string synthetic_failure = 12;
+  string correlation_id = 13;
+}
+
+message ControlPlaneDirective {
+  string directive_type = 1;
+  string owner_hint = 2;
+  string message = 3;
+  string correlation_id = 4;
+}
+
+message DiagnosticRequest {
+  string worker_id = 1;
+  string incident_id = 2;
+  string failure_type = 3;
+  string requested_at = 4;
+  string correlation_id = 5;
+}
+
+message DiagnosticBundle {
+  string worker_id = 1;
+  string incident_id = 2;
+  string collected_at = 3;
+  string diagnostic_status = 4;
+  string json_payload = 5;
+  string correlation_id = 6;
+}
+
+message Ack {
+  bool accepted = 1;
+  string message = 2;
+}
+

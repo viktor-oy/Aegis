@@ -1,6 +1,6 @@
 # Local Kubernetes Validation Runbook
 
-1. Open the repository in the Devcontainer.
+1. Ensure toolchains are installed and active via mise.
 2. Create a local cluster:
 
    ```sh
@@ -32,4 +32,3 @@
 ## Notes
 
 Local Kind validates cloud-style manifests. Do not add Docker Compose as the primary runtime. Use Tilt live updates for service code and keep stateful dependencies running across app edits.
-
