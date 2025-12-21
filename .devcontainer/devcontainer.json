@@ -1,0 +1,37 @@
+{
+  "name": "Aegis Control Room",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "GO_VERSION": "1.25.7",
+      "PYTHON_VERSION": "3.13.13",
+      "KUBECTL_VERSION": "1.34.8",
+      "HELM_VERSION": "4.1.3",
+      "KUSTOMIZE_VERSION": "5.8.1",
+      "TERRAFORM_VERSION": "1.12.2",
+      "KIND_VERSION": "0.29.0",
+      "TILT_VERSION": "0.33.22",
+      "PROTOC_VERSION": "29.5"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-python.python",
+        "ms-python.mypy-type-checker",
+        "charliermarsh.ruff",
+        "ms-kubernetes-tools.vscode-kubernetes-tools"
+      ]
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "postCreateCommand": "python -m pip install --upgrade pip==24.3.1 && python -m pip install -e '.[dev]'",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ]
+}
+
