@@ -2,7 +2,7 @@
 name = "aegis"
 version = "0.1.0"
 description = "Aegis GPU/AI infrastructure failure control plane"
-requires-python = ">=3.13"
+requires-python = ">=3.14.1"
 dependencies = [
   "grpcio==1.67.1",
   "grpcio-tools==1.67.1",
