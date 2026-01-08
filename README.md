@@ -34,16 +34,18 @@ Use the three-layer model:
 
 After running `mise install`:
 
+After running `mise install`:
+
 ```sh
-make kind-up
-tilt up
+tilt up -f Tiltfile.infra # (Optional) Spin up backend services independently
+tilt up                   # Starts both infra and aegis apps
 ```
 
-Tilt applies Helm/Kustomize artifacts and uses live update rules so Python source syncs without full image rebuilds, Go changes rebuild only the affected binary, and stateful infrastructure does not restart for app edits.
+Tilt applies Helm/Kustomize artifacts and uses live update rules so Python source syncs without full image rebuilds, Go changes rebuild only the affected binary, and stateful infrastructure does not restart for app edits. `Tiltfile.infra` contains core backing services like Kafka and Redis and can be spun up independently for integration testing.
 
 ## Services
 
-- `aegis-control-plane`: Go CP for ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication.
+- `aegis-control-plane`: Go CP for ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication. Configured via `AEGIS_CP_ADDRESS`, `AEGIS_GRPC_ADDRESS`, `AEGIS_REDIS_ADDR` and `AEGIS_KAFKA_BROKERS`. Supports multicore telemetry consumption.
 - `aegis-agent`: Python GPU/AI worker monitor with synthetic failure modes and diagnostics buffer.
 - `aegis-composer`: Python Kafka consumer that builds prompts, calls an OpenAI-compatible endpoint, validates Markdown, and publishes generated postmortems.
 - `aegis-sink-worker`: Go Kafka consumer that delivers postmortems to Slack, PostgreSQL, and S3/MinIO.
@@ -78,14 +80,15 @@ Kafka generated postmortem -> Go Sink Workers -> Slack + PostgreSQL + S3 -> stat
 
 ## Observability
 
-All services emit structured logs, metrics, and traces through OpenTelemetry Collector. Correlation IDs cross gRPC, Kafka, composer, sinks, and owner redirects. Required metrics include active agents, missed heartbeats, incidents, diagnostics, postmortem latency, Kafka lag, delivery status, DLQ count, CP queue depth, `ResourceExhausted`, redirect count, ring rebuild count, Redis polling errors, lock failures, and AI latency/failures.
+All services emit structured logs, metrics, and traces through OpenTelemetry. Correlation IDs cross gRPC, Kafka, composer, sinks, and owner redirects. Required metrics include active agents, missed heartbeats, incidents, diagnostics, postmortem latency, Kafka lag, delivery status, DLQ count, CP queue depth, `ResourceExhausted`, redirect count, ring rebuild count, Redis polling errors, lock failures, and AI latency/failures.
 
-Dashboards live under `observability/dashboards/` and cover CP health, Agent health, Kafka pipeline, postmortem generation, sink delivery, ring membership, and chaos/performance runs.
+Local development: logs are written to stdout. Full observability stack (OTel Collector, Prometheus, Grafana) is a future TODO; see `infra/kustomize/base/local-infra.yaml` for the collector manifest.
 
 ## Testing
 
 ```sh
 make test-python
+tilt up -f Tiltfile.infra # Ensure backing services are up for integration tests
 make test-go
 ```
 
@@ -121,3 +124,8 @@ AI integration: OpenAI-compatible endpoint such as vLLM, KServe, Triton-adjacent
 Security and hardening: Kubernetes Secrets, optional gRPC mTLS wiring, Kafka authentication and ACL notes, Redis authentication, NetworkPolicy, least-privilege ServiceAccounts, rate limiting, secret rotation notes.
 
 Version pins are tracked in `VERSION_LEDGER.md`.
+
+## API Reference
+
+- [`docs/api/grpc.md`](docs/api/grpc.md) — gRPC services, messages, and connection notes
+- [`docs/api/kafka.md`](docs/api/kafka.md) — Kafka topics, envelope schema, and payload shapes
