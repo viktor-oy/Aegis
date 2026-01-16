@@ -2,7 +2,7 @@
 name = "aegis"
 version = "0.1.0"
 description = "Aegis GPU/AI infrastructure failure control plane"
-requires-python = ">=3.14.1"
+requires-python = ">=3.9"
 dependencies = [
   "grpcio==1.67.1",
   "grpcio-tools==1.67.1",
@@ -10,32 +10,35 @@ dependencies = [
   "aiokafka==0.12.0",
   "pydantic==2.10.4",
   "httpx==0.28.1",
-  "opentelemetry-api==1.29.0",
-  "opentelemetry-sdk==1.29.0",
-  "opentelemetry-exporter-otlp==1.29.0",
-  "tenacity==9.0.0"
+  "tenacity==9.0.0",
+  "fastapi==0.110.0",
+  "uvicorn==0.27.0"
 ]
+
+[tool.setuptools]
+packages = ["services.agent", "services.composer", "gen.python", "gen.python.aegis", "gen.python.aegis.v1"]
 
 [project.optional-dependencies]
 dev = [
   "pytest==8.3.4",
   "pytest-cov==6.0.0",
+  "pytest-asyncio>=0.24.0",
   "mypy==1.14.1",
   "ruff==0.8.6"
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py313"
 src = ["services/agent", "services/composer", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.13"
 strict = true
-packages = ["aegis_agent", "aegis_composer"]
+packages = ["services.agent", "aegis_composer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

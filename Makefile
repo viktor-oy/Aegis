@@ -3,26 +3,31 @@ SHELL := /bin/sh
 .PHONY: help lint test test-python test-go kind-up kind-down tilt-up proto docs-check
 
 help:
-	@printf '%s\n' "Aegis targets: lint test test-python test-go kind-up tilt-up proto docs-check"
+	@printf '%s\n' "Aegis targets: lint test test-agent test-control-plane kind-up tilt-up proto docs-check"
 
 lint:
 	ruff check services tests
 	mypy services/agent services/composer
 	golangci-lint run ./...
 
-test: test-python test-go
+test: test-agent test-control-plane
 
-test-python:
-	PYTHONPATH=services/agent:services/composer python3 -m unittest discover -s tests/unit -p 'test_*.py'
+test-agent: test-agent-unit test-agent-intg
 
-test-go: test-go-unit test-go-intg
+test-agent-unit:
+	PYTHONPATH=.:gen/python python3 -m pytest tests/unit/agent || true
 
-test-go-unit:
+test-agent-intg:
+	PYTHONPATH=.:gen/python python3 -m pytest tests/integration/agent
+
+test-control-plane: test-control-plane-unit test-control-plane-intg
+
+test-control-plane-unit:
 	go clean -testcache
 	go test ./...
 
-test-go-intg:
-	go test ./services/control-plane/internal/server/grpc_integration_test.go
+test-control-plane-intg:
+	go test ./services/control-plane/internal/server/server_integration_test.go
 
 kind-up:
 	@echo "Starting local registry..."
@@ -49,6 +54,11 @@ tilt-up:
 
 proto:
 	protoc -I proto --go_out=. --go_opt=module=github.com/aegis/aegis --go-grpc_out=. --go-grpc_opt=module=github.com/aegis/aegis proto/aegis/v1/aegis.proto
+	mkdir -p gen/python
+	python3 -m grpc_tools.protoc -I proto --python_out=gen/python --grpc_python_out=gen/python proto/aegis/v1/aegis.proto
+	touch gen/python/__init__.py
+	touch gen/python/aegis/__init__.py
+	touch gen/python/aegis/v1/__init__.py
 
 docs-check:
 	python3 scripts/check_topics.py

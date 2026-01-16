@@ -10,7 +10,7 @@ Python Agents stream telemetry to Go Control Plane replicas. CP replicas use Red
 
 ## Experiment Setup
 
-The validation setup uses local Kubernetes with pinned infrastructure versions, mock GPU telemetry, mock Slack, mock AI, Redis, Kafka, PostgreSQL, MinIO, and OpenTelemetry Collector.
+The validation setup uses local Kubernetes with pinned infrastructure versions, configurable GPU or mock telemetry, mock Slack, an OpenAI-compatible inference endpoint, Redis, Kafka, PostgreSQL, MinIO, and OpenTelemetry Collector.
 
 ## Failures and Bottlenecks
 
@@ -48,4 +48,3 @@ The MVP favors deterministic behavior and clear failure boundaries over deeply o
 - Add production gRPC mTLS.
 - Expand GPU vendor collectors.
 - Add an Operator/CRD for managed cloud deployments.
-

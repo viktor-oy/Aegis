@@ -6,4 +6,3 @@ k8s_resource('kafka', labels=['infra'], port_forwards=['9092:9092', '9094:9094']
 k8s_resource('redis', labels=['infra'], port_forwards=['6379:6379'])
 k8s_resource('postgresql', labels=['infra'], port_forwards=['5432:5432'])
 k8s_resource('minio', port_forwards=['9000:9000'], labels=['infra'])
-k8s_resource('otel-collector', labels=['observability'])

@@ -15,3 +15,15 @@ k8s_resource(
     port_forwards=['50051:50051'],
     labels=['control-plane']
 )
+
+docker_build(
+    'aegis-agent',
+    '.',
+    dockerfile='services/agent/Dockerfile',
+)
+
+k8s_resource(
+    workload='aegis-agent',
+    port_forwards=['8080:8080'],
+    labels=['agent']
+)

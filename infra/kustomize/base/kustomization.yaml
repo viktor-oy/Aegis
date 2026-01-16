@@ -4,3 +4,4 @@ resources:
   - namespace.yaml
   - local-infra.yaml
   - services/control-plane.yaml
+  - services/agent.yaml
