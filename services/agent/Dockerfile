@@ -3,7 +3,6 @@ FROM python:3.13.13-slim-bookworm
 WORKDIR /workspace
 COPY pyproject.toml ./
 COPY services/agent ./services/agent
-COPY services/composer ./services/composer
 COPY gen/python ./gen/python
 RUN python -m pip install --upgrade pip==24.3.1 \
     && python -m pip install -e . \
