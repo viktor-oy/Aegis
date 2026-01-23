@@ -1,6 +1,7 @@
 import pytest
 from services.agent.client import ControlPlaneDiscovery
 
+
 def test_discovery_no_urls():
     with pytest.raises(ValueError, match="at least one bootstrap"):
         ControlPlaneDiscovery([])

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import pytest
-import httpx
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from services.composer.api import app, ComposeRequest
+import httpx
+from services.composer.api import app
 from services.composer.service import GeneratedPostmortem
+
 
 async def run_health_test() -> None:
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

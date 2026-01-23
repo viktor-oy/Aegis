@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import logging
 import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .llm_client import InferenceClient
@@ -114,7 +114,7 @@ class ComposerService:
             metadata={
                 "model": self.inference_client.model,
                 "prompt_version": self.prompt_version,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "validation_status": "valid" if validation.ok else "invalid",
                 "validation_errors": validation.errors,
             },

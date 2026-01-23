@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import logging
-from typing import AsyncGenerator, Any, Optional
-from contextlib import asynccontextmanager
 import asyncio
+import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -14,15 +15,13 @@ from .service import ComposerService
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from .kafka_app import run_from_env
     task = asyncio.create_task(run_from_env())
     yield
     task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
 app = FastAPI(
     title="Aegis Composer",
@@ -34,7 +33,7 @@ app = FastAPI(
 
 class ComposeRequest(BaseModel):
     diagnostic_event: dict[str, Any]
-    guidance: Optional[dict[str, Any]] = None
+    guidance: dict[str, Any] | None = None
 
 
 class ComposeResponse(BaseModel):
@@ -58,7 +57,10 @@ def health() -> dict[str, str]:
 
 @app.post("/compose", response_model=ComposeResponse)
 async def compose_postmortem(req: ComposeRequest) -> ComposeResponse:
-    logger.info("Received synchronous compose request", extra={"incident_id": req.diagnostic_event.get("incident_id")})
+    logger.info(
+        "Received synchronous compose request",
+        extra={"incident_id": req.diagnostic_event.get("incident_id")},
+    )
     service = get_composer_service()
     generated = await service.compose(req.diagnostic_event, req.guidance)
     return ComposeResponse(

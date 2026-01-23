@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import cycle
-from typing import Iterable
 
 from .backoff import FullJitterBackoff
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from random import Random
 from subprocess import run
 
@@ -85,7 +85,7 @@ class SyntheticCollector:
 
         return TelemetrySample(
             worker_id=self.worker_id,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             gpu_utilization=0.74,
             vram_used_bytes=vram_used,
             vram_total_bytes=vram_total,
@@ -133,7 +133,7 @@ class GPUTelemetryCollector:
         ]
         return TelemetrySample(
             worker_id=self.worker_id,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             gpu_utilization=_parse_float(gpu_util) / 100.0,
             vram_used_bytes=int(_parse_float(mem_used_mib) * 1024 * 1024),
             vram_total_bytes=int(_parse_float(mem_total_mib) * 1024 * 1024),

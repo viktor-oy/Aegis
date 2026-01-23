@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 import asyncio
 
 from services.composer.prompt import build_prompt

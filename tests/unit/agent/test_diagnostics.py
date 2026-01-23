@@ -1,7 +1,8 @@
-import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from services.agent.diagnostics import DiagnosticBuffer
 from services.agent.telemetry import TelemetrySample
+
 
 def test_diagnostic_buffer_initialization():
     buf = DiagnosticBuffer(worker_id="worker-1", max_items=5)
@@ -14,7 +15,7 @@ def test_diagnostic_buffer_adds_items():
     buf = DiagnosticBuffer(worker_id="worker-1", max_items=5)
     
     sample = TelemetrySample(
-        worker_id="worker-1", timestamp=datetime.now(timezone.utc), gpu_utilization=0.5,
+        worker_id="worker-1", timestamp=datetime.now(UTC), gpu_utilization=0.5,
         vram_used_bytes=100, vram_total_bytes=200, temperature_celsius=60.0,
         power_watts=150.0, ecc_error_count=0, inference_latency_ms=10.0,
         local_queue_depth=1, model_server_healthy=True, synthetic_failure_flag="normal",
@@ -40,7 +41,7 @@ def test_diagnostic_buffer_rollover():
 def test_build_bundle_with_hints():
     buf = DiagnosticBuffer(worker_id="worker-1")
     sample = TelemetrySample(
-        worker_id="worker-1", timestamp=datetime.now(timezone.utc), gpu_utilization=0.5,
+        worker_id="worker-1", timestamp=datetime.now(UTC), gpu_utilization=0.5,
         vram_used_bytes=100, vram_total_bytes=200, temperature_celsius=90.0,
         power_watts=150.0, ecc_error_count=0, inference_latency_ms=10.0,
         local_queue_depth=1, model_server_healthy=False, synthetic_failure_flag="model_crash",

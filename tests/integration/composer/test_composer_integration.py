@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
-import logging
 import socket
 import subprocess
 import time
 from uuid import uuid4
 
+import httpx
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-import httpx
-
 from services.composer.kafka_app import KafkaComposerApp, KafkaComposerConfig
+from services.composer.llm_client import InferenceConfig, OpenAICompatibleInferenceClient
 from services.composer.service import ComposerService
-from services.composer.llm_client import OpenAICompatibleInferenceClient, InferenceConfig
 
 
 def is_port_open(port: int) -> bool:
@@ -124,10 +123,8 @@ async def run_test() -> None:
             await consumer.stop()
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
 
 @pytest.mark.integration

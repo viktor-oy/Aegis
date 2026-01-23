@@ -1,5 +1,5 @@
-import pytest
 from services.agent.backoff import FullJitterBackoff
+
 
 def test_backoff_initial_sleep():
     b = FullJitterBackoff(base_seconds=1.0, cap_seconds=10.0)

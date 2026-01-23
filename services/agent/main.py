@@ -1,21 +1,22 @@
 import asyncio
-import json
 import logging
 import sys
 
 import grpc
 import uvicorn
-
-from .config import AgentConfig, TelemetryDataSource
-from .diagnostics import DiagnosticBuffer
-from .telemetry import build_collector
-from .client import ControlPlaneDiscovery
-from .api import app
-
 from aegis.v1 import aegis_pb2, aegis_pb2_grpc
-from .telemetry import SyntheticCollector, GPUTelemetryCollector
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
+from .api import app
+from .client import ControlPlaneDiscovery
+from .config import AgentConfig
+from .diagnostics import DiagnosticBuffer
+from .telemetry import GPUTelemetryCollector, SyntheticCollector, build_collector
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stdout,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -33,12 +34,13 @@ async def run_grpc_stream(
         
         try:
             async with grpc.aio.insecure_channel(target) as channel:
-                # Wait for the network connection to be fully established (timeout to prevent hanging)
+                # Wait for the network connection to be fully established
+                # (timeout to prevent hanging)
                 try:
                     await asyncio.wait_for(channel.channel_ready(), timeout=5.0)
                     logger.info(f"Successfully connected to Control Plane network at {target}")
-                except asyncio.TimeoutError:
-                    raise Exception("Connection timed out waiting for channel readiness")
+                except TimeoutError as exc:
+                    raise Exception("Connection timed out waiting for channel readiness") from exc
                 
                 stub = aegis_pb2_grpc.ControlPlaneTelemetryStub(channel)
                 
@@ -47,7 +49,9 @@ async def run_grpc_stream(
                         try:
                             sample = collector.collect()
                         except Exception as exc:
-                            diagnostics.add_event("telemetry_collection_failed", {"error": str(exc)})
+                            diagnostics.add_event(
+                                "telemetry_collection_failed", {"error": str(exc)}
+                            )
                             logger.error(f"Telemetry collection failed: {exc}")
                             sample = None
                             
@@ -73,7 +77,9 @@ async def run_grpc_stream(
                                 logger.error(f"Failed to create AgentTelemetry: {ex}")
                                 raise
                         else:
-                            diagnostics.add_event("heartbeat_suppressed", {"mode": config.simulation_mode})
+                            diagnostics.add_event(
+                                "heartbeat_suppressed", {"mode": config.simulation_mode}
+                            )
                             
                         await asyncio.sleep(config.heartbeat_interval_seconds)
 
@@ -94,20 +100,26 @@ async def run_grpc_stream(
                         discovery.accept(target)
                     elif response.directive_type == "backoff" or response.directive_type == "":
                         delay = discovery.owner_failed()
-                        logger.warning(f"Control plane instructed backoff. Backing off for {delay:.2f}s")
+                        logger.warning(
+                            f"Control plane instructed backoff. Backing off for {delay:.2f}s"
+                        )
                         await asyncio.sleep(delay)
                         call.cancel()
                         break
                         
         except grpc.aio.AioRpcError as e:
             delay = discovery.owner_failed()
-            logger.warning(f"gRPC connection to {target} failed: {e.code()}. Backing off for {delay:.2f}s")
+            logger.warning(
+                f"gRPC connection to {target} failed: {e.code()}. Backing off for {delay:.2f}s"
+            )
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             delay = discovery.owner_failed()
-            logger.error(f"Unexpected error communicating with {target}: {e}. Backing off for {delay:.2f}s")
+            logger.error(
+                f"Unexpected error communicating with {target}: {e}. Backing off for {delay:.2f}s"
+            )
             await asyncio.sleep(delay)
 
     print("RUN_GRPC_STREAM EXITED WHILE LOOP")
@@ -122,7 +134,10 @@ async def async_main() -> None:
     app.state.buffer = diagnostics
     app.state.collector = collector
 
-    logger.info(f"aegis-agent starting worker_id={config.worker_id} telemetry_data_source={config.telemetry_data_source}")
+    logger.info(
+        f"aegis-agent starting worker_id={config.worker_id} "
+        f"telemetry_data_source={config.telemetry_data_source}"
+    )
 
     grpc_task = asyncio.create_task(run_grpc_stream(config, collector, diagnostics))
     
