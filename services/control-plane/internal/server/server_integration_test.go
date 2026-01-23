@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"github.com/aegis/aegis/tests/integration/testutils"
 )
 
 var (
@@ -36,83 +37,9 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	fmt.Println("Bootstrapping testing workflow...")
-
-	// 1. Check if infra is already running
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	rClient := redis.NewClient(&redis.Options{Addr: redisAddr})
-	errRedis := rClient.Ping(ctx).Err()
-	_ = rClient.Close()
-
-	conn, errKafka := net.DialTimeout("tcp", kafkaBrokers[0], 2*time.Second)
-	if conn != nil {
-		_ = conn.Close()
-	}
-
-	var tiltCmd *exec.Cmd
-	if errRedis != nil || errKafka != nil {
-		// Infra is not running, start tilt up in background
-		fmt.Println("Starting infrastructure via tilt up --port 10351 (this may take a minute)...")
-		tiltCmd = exec.Command("tilt", "up", "--port", "10351", "-f", "../../../../Tiltfile.infra")
-		if verbose := os.Getenv("AEGIS_TEST_INFRA_SETUP_VERBOSE"); verbose == "1" || verbose == "true" {
-			tiltCmd.Stdout = os.Stdout
-			tiltCmd.Stderr = os.Stderr
-		}
-
-		if err := tiltCmd.Start(); err != nil {
-			fmt.Printf("failed to start tilt up: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Poll for readiness
-		ready := false
-		for i := 0; i < 90; i++ { // wait up to 90 seconds
-			time.Sleep(1 * time.Second)
-
-			rClient := redis.NewClient(&redis.Options{Addr: redisAddr})
-			errR := rClient.Ping(context.Background()).Err()
-			_ = rClient.Close()
-
-			c, errK := net.DialTimeout("tcp", kafkaBrokers[0], 1*time.Second)
-			if c != nil {
-				_ = c.Close()
-			}
-
-			if errR == nil && errK == nil {
-				ready = true
-				break
-			}
-		}
-
-		if !ready {
-			fmt.Println("infrastructure failed to become ready")
-			if tiltCmd.Process != nil {
-				_ = tiltCmd.Process.Kill()
-			}
-			os.Exit(1)
-		}
-		fmt.Println("Infrastructure is ready!")
-	}
-
-	// Run all tests
+	cleanup := testutils.EnsureInfra([]string{"kafka", "redis"}, "../../../../Tiltfile.infra")
 	code := m.Run()
-
-	// Cleanup background tilt up
-	if tiltCmd != nil && tiltCmd.Process != nil {
-		fmt.Println("Shutting down background infrastructure...")
-		// Send SIGTERM or SIGINT so tilt cleans up port-forwards and resources
-		_ = tiltCmd.Process.Signal(syscall.SIGINT)
-		done := make(chan error, 1)
-		go func() { done <- tiltCmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = tiltCmd.Process.Kill()
-		}
-	}
-
+	cleanup()
 	os.Exit(code)
 }
 
