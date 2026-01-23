@@ -1,8 +1,14 @@
 allow_k8s_contexts('kind-aegis')
 
+# Build the AI Server — model is parameterized via OLLAMA_MODEL build arg (default: llama3.2:3b)
+# On Apple Silicon, Ollama automatically uses Metal GPU acceleration.
+docker_build('aegis-llm', 'infra/docker/llm', build_args={'OLLAMA_MODEL': 'llama3.2:3b'})
+
+# Apply all Kustomize base infra resources (Kafka, Redis, PostgreSQL, LLM))
 k8s_yaml(kustomize('infra/kustomize/overlays/local'))
 
 k8s_resource('kafka', labels=['infra'], port_forwards=['9092:9092', '9094:9094'])
 k8s_resource('redis', labels=['infra'], port_forwards=['6379:6379'])
 k8s_resource('postgresql', labels=['infra'], port_forwards=['5432:5432'])
+k8s_resource('aegis-llm', labels=['infra'], port_forwards=['11434:11434'])
 k8s_resource('minio', port_forwards=['9000:9000'], labels=['infra'])

@@ -27,3 +27,14 @@ k8s_resource(
     port_forwards=['8080:8080'],
     labels=['agent']
 )
+
+docker_build(
+    'aegis-composer',
+    '.',
+    dockerfile='services/composer/Dockerfile',
+)
+
+k8s_resource(
+    workload='aegis-composer',
+    labels=['composer']
+)

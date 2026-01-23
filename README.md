@@ -45,7 +45,18 @@ Tilt applies Helm/Kustomize artifacts and uses live update rules so Python sourc
 
 - `aegis-control-plane`: Go CP for ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication. Configured via `AEGIS_CP_ADDRESS`, `AEGIS_GRPC_ADDRESS`, `AEGIS_REDIS_ADDR` and `AEGIS_KAFKA_BROKERS`. Supports multicore telemetry consumption.
 - `aegis-agent`: Python GPU/AI worker monitor with synthetic failure modes, diagnostics buffer, and a local FastAPI-driven Swagger UI for testing API endpoints.
-- `aegis-composer`: Python Kafka consumer that reads diagnostics requests, calls an OpenAI-compatible inference endpoint, validates Markdown, and publishes generated postmortems back to Kafka.
+- `aegis-composer`: Postmortem Composer (Python, FastAPI, Kafka). Generates postmortems from diagnostics using an OpenAI-compatible inference endpoint, validates Markdown, and publishes generated postmortems back to Kafka. Exposes an API endpoint for synchronous testing.
+
+#### Composer Configuration
+- `AEGIS_COMPOSER_GROUP_ID`: Kafka consumer group for Composer.
+- `AEGIS_COMPOSER_INPUT_TOPIC`: Kafka topic Composer consumes diagnostics from.
+- `AEGIS_COMPOSER_OUTPUT_TOPIC`: Kafka topic Composer publishes postmortems to.
+
+#### Prompt Injection Overrides
+Composer embeds default system architecture and formatting prompts from its internal `/workspace/services/composer/prompts/` directory. Engineers can override these by passing raw markdown string values into these environment variables:
+- `AEGIS_COMPOSER_SYS_ARCH_PROMPT`: Overrides the system architecture context.
+- `AEGIS_COMPOSER_FORMAT_PROMPT`: Overrides the LLM formatting guidelines.
+
 - `aegis-sink-worker`: Go Kafka consumer that delivers postmortems to Slack, PostgreSQL, and S3/MinIO.
 - `mock-slack`: non-production webhook receiver.
 

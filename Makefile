@@ -3,14 +3,22 @@ SHELL := /bin/sh
 .PHONY: help lint test test-python test-go kind-up kind-down tilt-up proto docs-check
 
 help:
-	@printf '%s\n' "Aegis targets: lint test test-agent test-control-plane kind-up tilt-up proto docs-check"
+	@printf '%s\n' "Aegis targets: lint test test-agent test-control-plane test-composer kind-up tilt-up proto docs-check"
 
 lint:
 	ruff check services tests
 	mypy services/agent services/composer
 	golangci-lint run ./...
 
-test: test-agent test-control-plane
+test: test-agent test-control-plane test-composer
+
+test-composer: test-composer-unit test-composer-intg
+
+test-composer-unit:
+	PYTHONPATH=. python3 -m pytest tests/unit/composer || true
+
+test-composer-intg:
+	PYTHONPATH=. python3 -m pytest tests/integration/composer
 
 test-agent: test-agent-unit test-agent-intg
 

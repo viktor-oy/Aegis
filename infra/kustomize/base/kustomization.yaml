@@ -3,5 +3,7 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - local-infra.yaml
+  - infra/llm.yaml
   - services/control-plane.yaml
   - services/agent.yaml
+  - services/composer.yaml

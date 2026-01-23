@@ -15,8 +15,8 @@ dependencies = [
   "uvicorn==0.27.0"
 ]
 
-[tool.setuptools]
-packages = ["services.agent", "services.composer", "gen.python", "gen.python.aegis", "gen.python.aegis.v1"]
+[tool.setuptools.packages.find]
+include = ["services.*", "gen.python", "gen.python.*"]
 
 [project.optional-dependencies]
 dev = [
@@ -38,7 +38,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 [tool.mypy]
 python_version = "3.13"
 strict = true
-packages = ["services.agent", "aegis_composer"]
+packages = ["services.agent", "services.composer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
