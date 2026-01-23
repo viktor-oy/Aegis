@@ -1,5 +1,7 @@
 
 FUTURE TODO
+- ensure require env or get env are used at the right places project wide
+- ensure integration tests starts service as a subprocess, for production process parity.
 - use PVC or similar(e.g. s3) means to load AI model instead of docker build or entryscript(to avoid data logistics or always redownloading)
 - implement submitdiagnosis
 - remove hardcoded configs including fallbacks(.urls ) that makes the program too forgiving instead of failing fast when the user has not provided config
