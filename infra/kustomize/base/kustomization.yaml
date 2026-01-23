@@ -7,3 +7,4 @@ resources:
   - services/control-plane.yaml
   - services/agent.yaml
   - services/composer.yaml
+  - services/sink.yaml

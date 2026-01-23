@@ -4,7 +4,7 @@
 
 Aegis is an out-of-path control plane for GPU and AI infrastructure. Python GPU Agents stream heartbeats and telemetry to Go Control Plane replicas. The Control Plane owns sharding, deterministic failure detection, incident state, diagnostics coordination, Redis-backed leases and locks, and Kafka event publication. Postmortem composition and delivery run downstream through Kafka so control-plane decisions stay deterministic.
 
-The MVP treats vLLM, KServe, Triton, custom inference servers, Slack, PostgreSQL, and S3-compatible storage as external systems. Aegis integrates with them through narrow adapters and never lets the AI endpoint decide whether a worker failed.
+The MVP treats vLLM, KServe, Triton, custom inference servers, File paths, and Email SMTP as external systems. Aegis integrates with them through narrow adapters and never lets the AI endpoint decide whether a worker failed.
 
 ## Problem Statement
 
@@ -18,7 +18,7 @@ GPU workers can overheat, exhaust VRAM, crash model servers, accumulate ECC erro
 - Worker state moves through `HEALTHY -> SUSPECTED -> DIAGNOSTICS_TRIGGERED -> DIAGNOSTICS_COLLECTED -> POSTMORTEM_REQUESTED -> POSTMORTEM_GENERATED -> DELIVERY_IN_PROGRESS -> DELIVERED/DELIVERY_FAILED -> RESOLVED`.
 - Kafka carries incident, diagnostic, postmortem, delivery, retry, and DLQ events in a common envelope.
 - The Composer calls an OpenAI-compatible endpoint only after deterministic incident detection.
-- Go Sink Workers deliver to Slack, PostgreSQL, and S3/MinIO with idempotency and explicit retry/DLQ behavior.
+- Go Sink Workers deliver to local File directories and Email (SMTP) with idempotency and explicit retry/DLQ behavior.
 
 ## Cloud Deployment Notes
 
@@ -57,7 +57,7 @@ Composer embeds default system architecture and formatting prompts from its inte
 - `AEGIS_COMPOSER_SYS_ARCH_PROMPT`: Overrides the system architecture context.
 - `AEGIS_COMPOSER_FORMAT_PROMPT`: Overrides the LLM formatting guidelines.
 
-- `aegis-sink-worker`: Go Kafka consumer that delivers postmortems to Slack, PostgreSQL, and S3/MinIO.
+- `aegis-sink`: Go Kafka consumer that delivers postmortems to File systems and Email.
 - `mock-slack`: non-production webhook receiver.
 
 ## Kafka Topics
@@ -83,7 +83,7 @@ Agent -> gRPC telemetry -> CP -> deterministic incident -> Kafka -> Composer -> 
 Sink fanout workflow:
 
 ```text
-Kafka generated postmortem -> Go Sink Workers -> Slack + PostgreSQL + S3 -> status/retry/DLQ topics
+Kafka generated postmortem -> Go Sink Workers -> File + Email -> status/retry/DLQ topics
 ```
 
 ## Observability
@@ -123,7 +123,7 @@ Distributed systems: consistent hashing with virtual nodes, Redis TTL membership
 
 Infrastructure: Kubernetes, Helm, Kustomize, Kind, Minikube/k3d-compatible overlays, Tilt, KEDA, Terraform, mise.
 
-Data and messaging: Kafka, Redis, PostgreSQL, S3-compatible storage, MinIO for local validation.
+Data and messaging: Kafka, Redis, MinIO for local validation.
 
 Observability: trace correlation IDs.
 

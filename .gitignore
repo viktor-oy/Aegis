@@ -19,3 +19,4 @@ reports/chaos/*
 !reports/chaos/.gitkeep
 *.log
 
+docs/services/*/local

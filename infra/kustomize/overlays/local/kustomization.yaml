@@ -3,3 +3,4 @@ kind: Kustomization
 namespace: aegis-system
 resources:
   - ../../base
+  - mailpit.yaml

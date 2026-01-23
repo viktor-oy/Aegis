@@ -38,3 +38,15 @@ k8s_resource(
     workload='aegis-composer',
     labels=['composer']
 )
+
+docker_build(
+    'aegis-sink',
+    '.',
+    dockerfile='services/sink/Dockerfile',
+)
+
+k8s_resource(
+    workload='aegis-sink',
+    port_forwards=['8081:8081'],
+    labels=['sink']
+)

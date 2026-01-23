@@ -3,14 +3,14 @@ SHELL := /bin/sh
 .PHONY: help lint test test-python test-go kind-up kind-down tilt-up proto docs-check
 
 help:
-	@printf '%s\n' "Aegis targets: lint test test-agent test-control-plane test-composer kind-up tilt-up proto docs-check"
+	@printf '%s\n' "Aegis targets: lint test test-agent test-control-plane test-composer test-sink kind-up tilt-up proto docs-check"
 
 lint:
 	ruff check services tests
 	mypy services/agent services/composer
 	golangci-lint run ./...
 
-test: test-agent test-control-plane test-composer
+test: test-agent test-control-plane test-composer test-sink
 
 test-composer: test-composer-unit test-composer-intg
 
@@ -36,6 +36,14 @@ test-control-plane-unit:
 
 test-control-plane-intg:
 	go test ./services/control-plane/internal/server/server_integration_test.go
+
+test-sink: test-sink-unit test-sink-intg
+
+test-sink-unit:
+	go test ./services/sink/...
+
+test-sink-intg:
+	go test -v -tags=integration ./services/sink/sink_integration_test.go ./services/sink/main.go
 
 kind-up:
 	@echo "Starting local registry..."
