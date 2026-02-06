@@ -26,7 +26,7 @@ flowchart LR
 
     subgraph Compose["Postmortem composition"]
       Composer["Python Composer\nvalidates Markdown"]
-      AI["OpenAI-compatible endpoint\nvLLM/KServe/mock"]
+      AI["OpenAI-compatible inference endpoint\nvLLM/KServe"]
       Composer --> AI
     end
 
@@ -82,7 +82,7 @@ GPU workers can overheat, exhaust VRAM, crash model servers, accumulate ECC erro
 
 ## Cloud Deployment Notes
 
-Kubernetes is the target runtime. Helm and Kustomize install standalone Aegis services plus Kafka, Redis, PostgreSQL, MinIO, OpenTelemetry Collector, observability, mock Slack, and mock AI components. Kubernetes provides DNS, scheduling, config, health checks, secrets, and autoscaling primitives; Aegis code owns shard routing, ownership redirects, failure detection, state transitions, and correlation propagation.
+Kubernetes is the target runtime. Helm and Kustomize install standalone Aegis services plus Kafka, Redis, PostgreSQL, MinIO, OpenTelemetry Collector, observability, mock Slack, and an OpenAI-compatible inference endpoint such as vLLM or KServe. Kubernetes provides DNS, scheduling, config, health checks, secrets, and autoscaling primitives; Aegis code owns shard routing, ownership redirects, failure detection, state transitions, and correlation propagation.
 
 ## Local Validation
 
@@ -105,10 +105,9 @@ Tilt applies Helm/Kustomize artifacts and uses live update rules so Python sourc
 
 - `aegis-control-plane`: Go CP for ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication.
 - `aegis-agent`: Python GPU/AI worker monitor with synthetic failure modes and diagnostics buffer.
-- `aegis-composer`: Python Kafka consumer that builds prompts, calls an OpenAI-compatible endpoint, validates Markdown, and publishes generated postmortems.
+- `aegis-composer`: Python Kafka consumer that reads diagnostics requests, calls an OpenAI-compatible inference endpoint, validates Markdown, and publishes generated postmortems back to Kafka.
 - `aegis-sink-worker`: Go Kafka consumer that delivers postmortems to Slack, PostgreSQL, and S3/MinIO.
 - `mock-slack`: non-production webhook receiver.
-- `mock-ai`: OpenAI-compatible non-production text endpoint.
 
 ## Kafka Topics
 
@@ -176,9 +175,8 @@ Data and messaging: Kafka, Redis, PostgreSQL, S3-compatible storage, MinIO for l
 
 Observability: OpenTelemetry Collector, Prometheus-style metrics, Grafana dashboards, Loki-compatible logs, trace correlation IDs.
 
-AI integration: OpenAI-compatible endpoint such as vLLM, KServe, Triton-adjacent mock workloads, or a mock LLM endpoint for local tests.
+AI integration: OpenAI-compatible inference endpoint such as vLLM or KServe.
 
 Security and hardening: Kubernetes Secrets, optional gRPC mTLS wiring, Kafka authentication and ACL notes, Redis authentication, NetworkPolicy, least-privilege ServiceAccounts, rate limiting, secret rotation notes.
 
 Version pins are tracked in `VERSION_LEDGER.md`.
-
