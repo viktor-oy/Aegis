@@ -3,7 +3,7 @@ FROM ollama/ollama:0.7.1
 # Model to bake at build time (cache warm-up). Override at runtime with:
 #   docker run -e OLLAMA_MODEL=qwen2.5:7b ...
 # On Apple Silicon (M1/M2/M3) Ollama uses Metal GPU acceleration automatically.
-ARG OLLAMA_MODEL=llama3.2:3b
+ARG OLLAMA_MODEL=llama3.2:1b
 ENV OLLAMA_MODEL=${OLLAMA_MODEL}
 
 # Bake the default model into the image so the first startup is fast.

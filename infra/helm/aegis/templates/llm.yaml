@@ -1,0 +1,62 @@
+{{- if .Values.llm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-llm
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "aegis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: llm
+  template:
+    metadata:
+      labels:
+        {{- include "aegis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: llm
+    spec:
+      {{- if .Values.llm.securityContext }}
+      securityContext:
+        {{- toYaml .Values.llm.securityContext | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ollama
+          image: {{ required "llm.image is required when llm is enabled" .Values.llm.image | quote }}
+          imagePullPolicy: {{ .Values.llm.imagePullPolicy | default "IfNotPresent" | quote }}
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_MODEL
+              value: {{ required "llm.model is required when llm is enabled" .Values.llm.model | quote }}
+          {{- if .Values.llm.resources }}
+          resources:
+            {{- toYaml .Values.llm.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.llm.securityContext }}
+          securityContext:
+            {{- toYaml .Values.llm.securityContext | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-llm
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "aegis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+  ports:
+    - port: 11434
+      targetPort: http
+      name: http
+{{- end }}

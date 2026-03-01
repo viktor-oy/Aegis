@@ -1,15 +1,76 @@
-allow_k8s_contexts('kind-aegis')
+aegis_env = os.getenv('AEGIS_ENV', 'local')
 
-# Build the AI Server — model is parameterized via OLLAMA_MODEL build arg (default: llama3.2:3b)
+allow_k8s_contexts(['kind-aegis', 'kind-aegis-intg-test'])
+if aegis_env == 'intg-test':
+    k8s_context('kind-aegis-intg-test')
+else:
+    # Use default context or whatever is active
+    pass
+
+# Build the AI Server — model is parameterized via OLLAMA_MODEL build arg (default: llama3.2:1b)
 # On Apple Silicon, Ollama automatically uses Metal GPU acceleration.
-docker_build('aegis-llm', 'infra/docker/llm', build_args={'OLLAMA_MODEL': 'llama3.2:3b'})
+docker_build('aegis-llm', 'infra/docker/llm', build_args={'OLLAMA_MODEL': 'llama3.2:1b'})
+
+# Run helm dependency update only when Chart.yaml changes (covers fresh setup and version bumps
+# without blocking every Tiltfile reload on a slow network round-trip).
+local_resource(
+    'helm-dep-update',
+    cmd='helm dependency update infra/helm/aegis',
+    trigger_mode=TRIGGER_MODE_AUTO,
+    deps=['infra/helm/aegis/Chart.yaml'],
+    labels=['infra'],
+)
+
+# Tell Tilt to watch these directories so it automatically reloads on changes
+watch_file('infra/kustomize')
+watch_file('infra/helm')
 
 # Apply all Kustomize base infra resources (Kafka, Redis, PostgreSQL, LLM))
-k8s_yaml(kustomize('infra/kustomize/overlays/local'))
+k8s_yaml(local('kustomize build --enable-helm infra/kustomize/overlays/local'))
 
-k8s_resource('kafka', labels=['infra'], port_forwards=['9092:9092', '9094:9094'])
-k8s_resource('redis', labels=['infra'], port_forwards=['6379:6379'])
-k8s_resource('postgresql', labels=['infra'], port_forwards=['5432:5432'])
-k8s_resource('aegis-llm', labels=['infra'], port_forwards=['11434:11434'])
-k8s_resource('minio', port_forwards=['9000:9000'], labels=['infra'])
-k8s_resource('mailpit', port_forwards=['10250:1025', '8025:8025'], labels=['infra'])
+kafka_pfs = ['9092:9092'] if aegis_env == 'intg-test' else []
+k8s_resource('aegis-kafka-controller', labels=['infra'], port_forwards=kafka_pfs)
+
+# Port-forward individual Kafka external services so local integration tests can reach every broker.
+if aegis_env == 'intg-test':
+    local_resource(
+        'kafka-pf-bootstrap',
+        serve_cmd='./infra/scripts/resilient-port-forward.sh svc/aegis-kafka-controller-0-external aegis-system 9094:9094',
+        resource_deps=['aegis-kafka-controller'],
+        labels=['infra'],
+    )
+    local_resource(
+        'kafka-pf-0',
+        serve_cmd='./infra/scripts/resilient-port-forward.sh svc/aegis-kafka-controller-0-external aegis-system 30094:9094',
+        resource_deps=['aegis-kafka-controller'],
+        labels=['infra'],
+    )
+    local_resource(
+        'kafka-pf-1',
+        serve_cmd='./infra/scripts/resilient-port-forward.sh svc/aegis-kafka-controller-1-external aegis-system 30095:9094',
+        resource_deps=['aegis-kafka-controller'],
+        labels=['infra'],
+    )
+    local_resource(
+        'kafka-pf-2',
+        serve_cmd='./infra/scripts/resilient-port-forward.sh svc/aegis-kafka-controller-2-external aegis-system 30096:9094',
+        resource_deps=['aegis-kafka-controller'],
+        labels=['infra'],
+    )
+
+# Automatically initialize Kafka topics once the Kafka controller is up
+local_resource(
+    'init-kafka',
+    cmd='make init-kafka',
+    resource_deps=['aegis-kafka-controller'],
+    labels=['infra'],
+)
+
+redis_pfs = ['6379:6379'] if aegis_env == 'intg-test' else []
+k8s_resource('aegis-redis-master', labels=['infra'], port_forwards=redis_pfs)
+
+llm_pfs = ['11434:11434'] if aegis_env == 'intg-test' else []
+k8s_resource('aegis-llm', labels=['infra'], port_forwards=llm_pfs)
+
+mailpit_pfs = ['10250:1025', '8025:8025'] if aegis_env == 'intg-test' else []
+k8s_resource('aegis-mailpit', labels=['infra'], port_forwards=mailpit_pfs)

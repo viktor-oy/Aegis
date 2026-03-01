@@ -1,0 +1,7 @@
+meta:
+  name: local
+  region: local
+  environment: dev
+spec:
+  bootstrapAddrs:
+    - localhost:9094

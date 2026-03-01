@@ -8,6 +8,7 @@ docker_build(
     'aegis-control-plane',
     '.',
     dockerfile='services/control-plane/Dockerfile',
+    only=['services/control-plane', 'gen', 'go.mod', 'go.sum'],
 )
 
 k8s_resource(
@@ -20,6 +21,7 @@ docker_build(
     'aegis-agent',
     '.',
     dockerfile='services/agent/Dockerfile',
+    only=['services/agent', 'gen/python', 'pyproject.toml'],
 )
 
 k8s_resource(
@@ -32,6 +34,7 @@ docker_build(
     'aegis-composer',
     '.',
     dockerfile='services/composer/Dockerfile',
+    only=['services/composer', 'pyproject.toml'],
 )
 
 k8s_resource(
@@ -43,6 +46,7 @@ docker_build(
     'aegis-sink',
     '.',
     dockerfile='services/sink/Dockerfile',
+    only=['services/sink', 'gen', 'go.mod', 'go.sum'],
 )
 
 k8s_resource(

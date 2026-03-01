@@ -1,9 +1,11 @@
 SHELL := /bin/sh
+TILT_TEST_LOG ?= /tmp/aegis_tilt_test.log
+export TILT_TEST_LOG
 
-.PHONY: help lint test test-python test-go kind-up kind-down tilt-up proto docs-check
+.PHONY: help lint test test-unit test-intg test-python test-go tilt-infra-up proto docs-check tf-init tf-up tf-down dev-up init-kafka
 
 help:
-	@printf '%s\n' "Aegis targets: lint test test-agent test-control-plane test-composer test-sink kind-up tilt-up proto docs-check"
+	@printf '%s\n' "Aegis targets: lint test test-unit test-intg test-agent test-control-plane test-composer test-sink dev-up tilt-infra-up proto docs-check init-kafka"
 
 lint:
 	ruff check services tests
@@ -12,60 +14,101 @@ lint:
 
 test: test-agent test-control-plane test-composer test-sink
 
+test-unit: test-agent-unit test-control-plane-unit test-composer-unit test-sink-unit
+
+test-intg: test-agent-intg test-control-plane-intg test-composer-intg test-sink-intg
+
 test-composer: test-composer-unit test-composer-intg
 
 test-composer-unit:
-	PYTHONPATH=. python3 -m pytest tests/unit/composer || true
+	PYTHONPATH=. python3 -m pytest -s --log-cli-level=INFO tests/unit/composer || true
 
 test-composer-intg:
-	PYTHONPATH=. python3 -m pytest tests/integration/composer
+	./tests/integration/testutils/ensure_test_infra.py
+	PYTHONPATH=. python3 -m pytest -s --color=yes --log-cli-level=INFO tests/integration/composer
 
 test-agent: test-agent-unit test-agent-intg
 
 test-agent-unit:
-	PYTHONPATH=.:gen/python python3 -m pytest tests/unit/agent || true
+	PYTHONPATH=.:gen/python python3 -m pytest -s --color=yes --log-cli-level=INFO tests/unit/agent || true
 
 test-agent-intg:
-	PYTHONPATH=.:gen/python python3 -m pytest tests/integration/agent
+	./tests/integration/testutils/ensure_test_infra.py
+	PYTHONPATH=.:gen/python python3 -m pytest -s --color=yes --log-cli-level=INFO tests/integration/agent
 
 test-control-plane: test-control-plane-unit test-control-plane-intg
 
 test-control-plane-unit:
 	go clean -testcache
-	go test ./...
+	go run gotest.tools/gotestsum@latest --format standard-verbose -- ./...
 
 test-control-plane-intg:
-	go test ./services/control-plane/internal/server/server_integration_test.go
+	./tests/integration/testutils/ensure_test_infra.py
+	go run gotest.tools/gotestsum@latest --format standard-verbose -- ./services/control-plane/internal/server/server_integration_test.go
 
 test-sink: test-sink-unit test-sink-intg
 
 test-sink-unit:
-	go test ./services/sink/...
+	go run gotest.tools/gotestsum@latest --format standard-verbose -- ./services/sink/...
 
 test-sink-intg:
-	go test -v -tags=integration ./services/sink/sink_integration_test.go ./services/sink/main.go
+	./tests/integration/testutils/ensure_test_infra.py
+	go run gotest.tools/gotestsum@latest --format standard-verbose -- -tags=integration ./services/sink
 
-kind-up:
-	@echo "Starting local registry..."
-	@if ! docker inspect kind-registry > /dev/null 2>&1; then \
-		docker run -d --restart=always -p 127.0.0.1:5001:5000 --name kind-registry registry:2.8.3; \
-	else \
-		echo "Registry already running."; \
-	fi
-	@echo "Creating kind cluster..."
-	kind create cluster --name aegis --image kindest/node:v1.34.8 --config infra/kind/cluster.yaml
-	@echo "Connecting registry to kind network..."
-	@docker network connect kind kind-registry 2>/dev/null || true
-	@echo "Annotating nodes for local registry discovery..."
-	for node in $$(kind get nodes --name aegis); do \
-		kubectl annotate node "$$node" tilt.dev/registry=localhost:5001 --overwrite; \
-	done
 
-kind-down:
-	kind delete cluster --name aegis
-	docker rm -f kind-registry 2>/dev/null || true
+tilt-infra-up:
+	tilt up -f Tiltfile.infra
 
-tilt-up:
+tilt-test-infra-up: clear-test-ports
+	AEGIS_ENV=intg-test tilt up --port 10352 --context kind-aegis-intg-test -f Tiltfile.infra
+
+KUBE_CONTEXT ?= kind-aegis
+
+init-kafka:
+	kubectl --context $(KUBE_CONTEXT) wait --for=condition=ready pod -l app.kubernetes.io/name=kafka -n aegis-system --timeout=300s
+	topicctl apply infra/kafka/topics.yaml --cluster-config infra/kafka/cluster.yaml --skip-confirm
+
+wipe-infra-state:
+	@./scripts/wipe_infra_state.py $(TARGETS)
+
+clear-test-ports:
+	@./scripts/clear_test_ports.py
+
+test-tilt-logs:
+	tail -f $(TILT_TEST_LOG)
+
+
+
+tf-init:
+	mise exec -- terraform -chdir=infra/terraform/local init
+
+_tf-apply: tf-init
+	mise exec -- terraform -chdir=infra/terraform/local workspace select -or-create $(WORKSPACE)
+	mise exec -- terraform -chdir=infra/terraform/local apply -auto-approve
+
+tf-up:
+	@$(MAKE) _tf-apply WORKSPACE=default
+
+test-tf-up:
+	@$(MAKE) _tf-apply WORKSPACE=intg-test
+
+tf-down:
+	mise exec -- terraform -chdir=infra/terraform/local destroy -auto-approve
+
+tf-kill:
+	kind delete cluster --name aegis || true
+	rm -f infra/terraform/local/terraform.tfstate*
+	rm -rf infra/terraform/local/.terraform
+	rm -f infra/terraform/local/.terraform.lock.hcl
+
+dev-up: tf-up
+	tilt up
+
+dev-up-0: tf-kill dev-up
+
+dev-up-0-lite:
+	kubectl delete all --all -n aegis-system --force --grace-period=0 || true
+	kubectl delete pvc,configmap,secret,ingress --all -n aegis-system --force --grace-period=0 || true
 	tilt up
 
 proto:

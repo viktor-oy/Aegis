@@ -1,0 +1,76 @@
+global:
+  security:
+    allowInsecureImages: true
+
+agent:
+  image: "aegis-agent:latest"
+  imagePullPolicy: Never
+  simulationMode: "normal"
+
+composer:
+  replicaCount: 3
+  image: "aegis-composer:latest"
+  imagePullPolicy: Never
+
+controlPlane:
+  replicaCount: 5
+  image: "aegis-control-plane:latest"
+  imagePullPolicy: Never
+
+sink:
+  replicaCount: 3
+  image: "aegis-sink:latest"
+  imagePullPolicy: Never
+  fileSink:
+    enabled: true
+
+kafka:
+  enabled: true
+  listeners:
+    external:
+      protocol: PLAINTEXT
+    client:
+      protocol: PLAINTEXT
+    interbroker:
+      protocol: PLAINTEXT
+    controller:
+      protocol: PLAINTEXT
+  controller:
+    replicaCount: 3
+    # Override the chart's default 500m CPU request so all 3 pods fit on the single kind node.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 512Mi
+      limits:
+        cpu: 750m
+        memory: 768Mi
+  externalAccess:
+    enabled: true
+    controller:
+      service:
+        domain: "localhost"
+        type: NodePort
+        ports:
+          external: 9094
+        nodePorts: [30094, 30095, 30096]
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+
+redis:
+  enabled: true
+
+mailpit:
+  enabled: true
+
+llm:
+  enabled: true
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi

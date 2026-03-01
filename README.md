@@ -2,50 +2,59 @@
 
 ## Overview
 
-Aegis is an out-of-path control plane for GPU and AI infrastructure. Python GPU Agents stream heartbeats and telemetry to Go Control Plane replicas. The Control Plane owns sharding, deterministic failure detection, incident state, diagnostics coordination, Redis-backed leases and locks, and Kafka event publication. Postmortem composition and delivery run downstream through Kafka so control-plane decisions stay deterministic.
+Aegis is a watchdog control plane for your GPU/AI infra. It sits completely out-of-band so it never bottlenecks your actual inference requests. Python agents sit on the GPU workers streaming heartbeats and telemetry to a Go control plane. The Go backend handles all the heavy lifting: sharding, deterministic failure detection, acquiring Redis locks, and publishing incident events to Kafka. Finally, a downstream Composer service spits out a neat postmortem and hands it to sink workers for delivery.
 
-The MVP treats vLLM, KServe, Triton, custom inference servers, File paths, and Email SMTP as external systems. Aegis integrates with them through narrow adapters and never lets the AI endpoint decide whether a worker failed.
+We treat inference servers (vLLM, KServe, Triton), file paths, and Email SMTP as external, black-box systems. Aegis integrates with them through narrow adapters. The golden rule: we never let a flaky AI endpoint dictate whether a worker is actually dead.
 
 ## Problem Statement
 
-GPU workers can overheat, exhaust VRAM, crash model servers, accumulate ECC errors, or disappear during network partitions. Teams need a deterministic control plane that detects these signals quickly, preserves diagnostic context, produces a useful incident postmortem, and fans it out without coupling failure detection to delivery systems.
+AI infra is messy. GPUs overheat, VRAM blows up, model servers crash, and networks randomly partition. We needed a deterministic way to catch these failures instantly, grab diagnostic context before it's lost, and fan out a useful postmortem—all without letting our observability tools couple tightly to our delivery systems.
 
 ## Architecture Summary
 
-- Python Agents identify with stable `worker_id` values and connect through bootstrap Control Plane URLs.
-- Go Control Plane replicas register only themselves in Redis and build an in-memory consistent hash ring from CP membership.
-- A receiving CP either owns the worker stream or returns a normal network address redirect hint.
-- Worker state moves through `HEALTHY -> SUSPECTED -> DIAGNOSTICS_TRIGGERED -> DIAGNOSTICS_COLLECTED -> POSTMORTEM_REQUESTED -> POSTMORTEM_GENERATED -> DELIVERY_IN_PROGRESS -> DELIVERED/DELIVERY_FAILED -> RESOLVED`.
-- Kafka carries incident, diagnostic, postmortem, delivery, retry, and DLQ events in a common envelope.
-- The Composer calls an OpenAI-compatible endpoint only after deterministic incident detection.
-- Go Sink Workers deliver to local File directories and Email (SMTP) with idempotency and explicit retry/DLQ behavior.
+- Python Agents lock onto stable `worker_id`s and connect to the Control Plane (CP) via bootstrap URLs.
+- The Go CPs register themselves in Redis and build a shared, in-memory consistent hash ring.
+- If an agent hits the wrong CP, the CP simply returns a network redirect hint to the rightful owner.
+- Worker state follows a strict state machine: `HEALTHY -> SUSPECTED -> DIAGNOSTICS_TRIGGERED -> DIAGNOSTICS_COLLECTED -> POSTMORTEM_REQUESTED -> POSTMORTEM_GENERATED -> DELIVERY_IN_PROGRESS -> DELIVERED/DELIVERY_FAILED -> RESOLVED`.
+- Kafka acts as the durable spine, carrying all incident, diagnostic, postmortem, retry, and DLQ events wrapped in a common envelope.
+- The Composer only reaches out to an OpenAI-compatible endpoint *after* we've deterministically caught an incident.
+- Go Sink Workers handle the final mile: dumping postmortems to local files or Email via SMTP, complete with idempotency, retries, and dead-letter queues.
 
 ## Cloud Deployment Notes
 
-Kubernetes is the target runtime. Helm and Kustomize install standalone Aegis services plus Kafka, Redis, PostgreSQL, MinIO, mock Slack, and an OpenAI-compatible inference endpoint such as vLLM or KServe. Kubernetes provides DNS, scheduling, config, health checks, secrets, and autoscaling primitives; Aegis code owns shard routing, ownership redirects, failure detection, state transitions, and correlation propagation.
+Built for K8s. We use Helm and Kustomize to spin up the standalone Aegis services alongside Kafka, Redis, PostgreSQL, MinIO, a mock Slack webhook, and an OpenAI-compatible LLM endpoint (like vLLM). We lean on Kubernetes for the boring stuff (DNS, scheduling, secrets, autoscaling) so Aegis code can focus entirely on shard routing, failure detection, state transitions, and correlation propagation.
 
 ## Local Validation
 
-Use the three-layer model:
+How to run this beast locally:
 
-1. Developer filesystem stores the repository.
-2. [mise](https://mise.jdx.dev/) provides pinned toolchains and CLIs.
-3. Kind, Minikube, or k3d runs the actual workloads.
+1. Your developer filesystem stores the repository.
+2. We rely heavily on [mise](https://mise.jdx.dev/) to pin our toolchains and CLIs so nobody has "works on my machine" issues.
+3. Kind, Minikube, or k3d handles the actual Kubernetes workloads.
 
-After running `mise install`:
+After running `mise install`, here are your lifesavers:
 
 ```sh
-tilt up -f Tiltfile.infra # (Optional) Spin up backend services independently
-tilt up                   # Starts both infra and aegis apps
+make dev-up            # Starts infra (Terraform) and aegis apps (Tilt)
+make dev-up-0          # Full nuclear teardown (destroys Kind cluster) and recreates everything
+make dev-up-0-lite     # Fast clean slate: forcefully wipes K8s namespaces without destroying the underlying cluster
 ```
 
-Tilt applies Helm/Kustomize artifacts and uses live update rules so Python source syncs without full image rebuilds, Go changes rebuild only the affected binary, and stateful infrastructure does not restart for app edits. `Tiltfile.infra` contains core backing services like Kafka and Redis and can be spun up independently for integration testing.
+> [!NOTE]
+> **Hack / Gotcha: Fast Teardowns without Finalizer Deadlocks**
+> If you've ever had a cluster hang during teardown, you know the pain of Kubernetes finalizers deadlocking when a Kubelet refuses to release a volume mount. The `dev-up-0-lite` command intentionally wipes active workloads (Pods/StatefulSets) *before* touching persistent volumes (PVCs) and ConfigMaps to bypass this nightmare entirely.
+
+> [!WARNING]
+> **Gotcha: The "More is Better" Trap (Resource Contention)**
+> It's super tempting to bump the replica counts in your `values-local.yaml` to watch Aegis scale, but remember you're running all of this on a local Docker VM or Colima. If you aggressively crank up the replicas for Kafka, Control Planes, or the LLM endpoint, your host machine will choke hard. Services will mysteriously crash-loop, Kafka connections will drop, and pods will hang forever—all due to pure compute/memory starvation, not code bugs. If things start acting weird, dial back your replicas or bump your Docker VM's RAM allocation!
+
+Tilt applies the Helm/Kustomize artifacts. We use live update rules so your Python tweaks sync instantly without full image rebuilds, Go changes only recompile the affected binary, and stateful infra doesn't constantly reboot on app edits. `Tiltfile.infra` handles the heavy backing services (Kafka, Redis) and can be spun up independently for integration testing.
 
 ## Services
 
-- `aegis-control-plane`: Go CP for ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication. Configured via `AEGIS_CP_ADDRESS`, `AEGIS_GRPC_ADDRESS`, `AEGIS_REDIS_ADDR` and `AEGIS_KAFKA_BROKERS`. Supports multicore telemetry consumption.
-- `aegis-agent`: Python GPU/AI worker monitor with synthetic failure modes, diagnostics buffer, and a local FastAPI-driven Swagger UI for testing API endpoints.
-- `aegis-composer`: Postmortem Composer (Python, FastAPI, Kafka). Generates postmortems from diagnostics using an OpenAI-compatible inference endpoint, validates Markdown, and publishes generated postmortems back to Kafka. Exposes an API endpoint for synchronous testing.
+- `aegis-control-plane`: The Go brains. Handles ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication. Configured via `AEGIS_CP_ADDRESS`, `AEGIS_GRPC_ADDRESS`, `AEGIS_REDIS_ADDR` and `AEGIS_KAFKA_BROKERS`. It fully supports multicore telemetry consumption.
+- `aegis-agent`: The Python GPU/AI worker monitor. We packed it with synthetic failure modes, a diagnostics buffer, and a local FastAPI Swagger UI so you can test API endpoints directly.
+- `aegis-composer`: The Postmortem Composer (Python, FastAPI, Kafka). It grabs diagnostics, formats them via an OpenAI-compatible endpoint, validates the Markdown, and throws the generated postmortem back into Kafka. Also exposes a synchronous API endpoint for quick testing.
 
 #### Composer Configuration
 - `AEGIS_COMPOSER_GROUP_ID`: Kafka consumer group for Composer.
@@ -53,12 +62,12 @@ Tilt applies Helm/Kustomize artifacts and uses live update rules so Python sourc
 - `AEGIS_COMPOSER_OUTPUT_TOPIC`: Kafka topic Composer publishes postmortems to.
 
 #### Prompt Injection Overrides
-Composer embeds default system architecture and formatting prompts from its internal `/workspace/services/composer/prompts/` directory. Engineers can override these by passing raw markdown string values into these environment variables:
+Composer embeds its default system architecture and formatting prompts from the internal `/workspace/services/composer/prompts/` directory. You can easily override these by passing raw markdown strings into these env vars:
 - `AEGIS_COMPOSER_SYS_ARCH_PROMPT`: Overrides the system architecture context.
 - `AEGIS_COMPOSER_FORMAT_PROMPT`: Overrides the LLM formatting guidelines.
 
-- `aegis-sink`: Go Kafka consumer that delivers postmortems to File systems and Email.
-- `mock-slack`: non-production webhook receiver.
+- `aegis-sink`: The Go Kafka consumer that handles the final delivery of postmortems to File systems and Email.
+- `mock-slack`: A dummy webhook receiver we use for local testing (not for production).
 
 ## Kafka Topics
 
@@ -74,13 +83,13 @@ Composer embeds default system architecture and formatting prompts from its inte
 
 ## Workflows
 
-Postmortem workflow:
+**Postmortem workflow:**
 
 ```text
 Agent -> gRPC telemetry -> CP -> deterministic incident -> Kafka -> Composer -> AI endpoint -> Kafka generated postmortem
 ```
 
-Sink fanout workflow:
+**Sink fanout workflow:**
 
 ```text
 Kafka generated postmortem -> Go Sink Workers -> File + Email -> status/retry/DLQ topics
@@ -88,9 +97,29 @@ Kafka generated postmortem -> Go Sink Workers -> File + Email -> status/retry/DL
 
 ## Observability
 
-All services emit standard structured logs to stdout. Correlation IDs cross gRPC, Kafka, composer, sinks, and owner redirects.
+Every service spits out standard structured logs to stdout. We pass strict trace correlation IDs across gRPC, Kafka, Composer, the Sinks, and even CP owner redirects so you never lose the thread.
 
-Local development: logs are written to stdout.
+Locally, everything just dumps to stdout.
+
+## Disaster Simulation (Scenario Runner)
+
+End-to-End tests are great for binary CI/CD pipelines, but they absolutely suck for demonstrating system resilience at massive async scale. 
+To actually prove Aegis's fault tolerance, we built a **Scenario Runner**.
+
+Instead of a rigid test, the Scenario Runner is a chaos script that injects staggered faults into a heavily scaled cluster (e.g., 10 CPs, 30 Agents) on a delay timer. You literally get to sit back and watch the system dynamically rebalance and recover in real-time.
+
+### Example: Sustained High Temperature
+1. **Trigger the disaster:**
+   ```bash
+   # (Placeholder: Script to be implemented in scripts/simulate_disaster.py)
+   python3 scripts/simulate_disaster.py --scenario=temperature --incident-id=temp-spike-001
+   ```
+2. **Observe the system react:**
+   👉 [Click here to view the live filtered logs for this incident in Tilt](http://localhost:10350/r/(all)/overview?q=temp-spike-001)
+
+> [!TIP]
+> **Engineering Decision: Unified Observability UX**
+> Pre-linking Tilt URLs with regex queries (like the link above) completely eliminates cognitive load. It instantly cuts through the noise of 50 background pods so you can perfectly track a single `correlation_id` hopping from Agent -> CP -> Kafka -> Composer -> Sink.
 
 ## Testing
 
@@ -102,36 +131,59 @@ make test-go
 
 Root-level test layout:
 
-- `tests/unit/`: isolated unit tests.
-- `tests/integration/`: component-boundary tests that write artifacts to `/reports/integration/`.
-- `tests/e2e/`: a few full-system scenarios.
-- `tests/chaos/`: resilience and performance tests that write artifacts to `/reports/chaos/`.
+- `tests/unit/`: fast, isolated unit tests.
+- `tests/integration/`: component-boundary tests. These write artifacts straight to `/reports/integration/`.
+- `tests/e2e/`: a handful of full-system scenarios.
+- `tests/chaos/`: resilience and performance stress tests, dumping artifacts to `/reports/chaos/`.
 
+> **Note on Integration Testing State:** Our integration tests need the infra cluster running (`make dev-up-0-lite` or `tilt up -f Tiltfile.infra`). The tests handle their own state cleanup before executing. To keep things blazing fast, Kafka state wiping is surgically scoped *only* to the topics touched by the specific test (e.g., `kafka:aegis.incident.detected,aegis.diagnostics.requested`).
+
+### Engineering Decisions & Test Infrastructure
+
+To keep testing consistent, output clean, and performance highly optimized across local/CI, we enforce a few strict conventions:
+
+1. **Go Test Runner (`gotestsum`)**: We don't natively run `go test` because it can be messy. The `Makefile` auto-downloads `gotest.tools/gotestsum@latest` for all Go tests. You get beautifully formatted, colorized output and clean summaries, and we pass `--format standard-verbose` to make sure logs still stream in real-time.
+2. **Python Test Runner (`pytest`)**: Our Python `Makefile` targets enforce `--color=yes` and `--log-cli-level=INFO` because nobody likes reading raw monochrome logs.
+3. **Optimized Kafka State Wiping**: Wiping state between tests by deleting and recreating Kafka topics is agonizingly slow. Instead, we use a custom Python script (`scripts/wipe_infra_state.py`) that queries `infra/kafka/topics.yaml` for partition limits and securely deletes records for *exactly* the scoped topics via `kafka-delete-records.sh` (e.g. `"kafka:aegis.postmortem.generated"`). It's easily 100x faster than tearing down topics or bouncing JVM containers.
+4. **Uniform Log Highlighting**: All internal test-progress prints (in both Python and Go) are normalized to use a bold `\033[36m[TEST: ...]\033[0m` Cyan prefix via unified helpers (`tests/integration/testutils/infra.go:LogInfo` and `scripts/wipe_infra_state.py:log_info`). This makes it trivially easy to spot your test boundaries inside the noisy async app logs.
+5. **Isolated Integration Test Cluster**: To stop state corruption and port collisions from ruining your local development, all integration tests target a dedicated Kind cluster (`aegis-intg-test`) with host ports dynamically bound via `AEGIS_ENV=intg-test`. You don't manage this: invoking `make test-intg` fires up our DRY `tests/integration/testutils/ensure_test_infra.py` wrapper. It auto-provisions the cluster, murders any zombie processes hogging test ports, spins up `tilt` in the background, waits for services (including the heavy LLM) to get healthy, and initializes Kafka topics before the test runner ever executes.
+
+   > [!WARNING]
+   > When `make test-intg` natively invokes `kind create cluster` behind the scenes, Kind's hardcoded default behavior is to automatically switch your active `kubectl` context to the newly created cluster. If you run tests in a background tab, be aware that your active terminal context might unexpectedly switch on you!
+   
+   > **Hack / Gotcha (inotify limits):** We run ~15 microservices concurrently during testing, so Tilt tries to stream logs for all of them at once. This instantly blows past the default Linux `fs.inotify.max_user_instances` limit (128) on the Kind node, throwing annoying `failed to create fsnotify watcher: too many open files` errors. Instead of forcing everyone to manually bump sysctl limits on their Mac or Docker VM, the `ensure_test_infra.py` wrapper intercepts the cluster boot process and sneaks in a dynamic sysctl hack (`fs.inotify.max_user_instances=512`) directly inside the Kind node container before handing off to Tilt. It works flawlessly.
+
+### How-to: Running Specific Tests
+
+To run tests individually while leveraging all our custom formatting and state clearing wrappers:
+
+- **Run all tests**: `make test-go test-agent test-composer`
+- **Run all integration tests**: `make test-intg`
+- **Start test infrastructure with HUD**: `make tilt-test-infra-up` (can be run manually before `make test-intg` to view the infrastructure spin-up via Tilt's interactive UI on port 10352)
+- **View integration test infra logs**: `make test-tilt-logs`
+- **Clear test ports manually**: `make clear-test-ports` (terminates any zombie processes occupying test infra ports)
+- **Run specific Go integration test**: `go run gotest.tools/gotestsum@latest --format standard-verbose -- ./services/sink -run TestSinkServiceIntegration_FileSink`
+- **Run specific Python integration test**: `PYTHONPATH=.:gen/python python3 -m pytest -s --color=yes --log-cli-level=INFO tests/integration/agent/test_agent_integration.py::test_grpc_stream_accepted`
+- **Wipe infra state manually**: `AEGIS_KUBE_CONTEXT="kind-aegis" make wipe-infra-state TARGETS="redis,kafka:aegis.telemetry,aegis.events"` (You can specify exact Kafka topics as subtargets. The `AEGIS_KUBE_CONTEXT` environment variable is explicitly required so you don't accidentally wipe the wrong cluster, e.g., your dev cluster vs your test cluster).
 ## KEDA Scaling
 
-KEDA ScaledObjects use CP queue depth and active agents for the Control Plane, Kafka lag for Composer and Sink Workers, and latency/concurrency signals for the optional local AI server. CPU and memory HPAs remain fallback scalers.
+KEDA ScaledObjects look at CP queue depth and active agents for the Control Plane, Kafka lag for Composer and Sink Workers, and latency/concurrency signals for the optional local AI server. CPU and memory HPAs are kept around as fallback scalers.
 
 ## Helm, Kustomize, and Terraform
 
-Helm owns the reusable cloud chart under `infra/helm/aegis`. Kustomize overlays under `infra/kustomize/overlays/local` and `infra/kustomize/overlays/cloud` apply small environment differences. Terraform under `infra/terraform/local` is optional and provisions foundations only; Aegis must deploy into an existing cluster without Terraform.
+Helm owns the reusable cloud chart under `infra/helm/aegis`. Kustomize overlays under `infra/kustomize/overlays/local` and `infra/kustomize/overlays/cloud` inject small environmental differences. Terraform under `infra/terraform/local` is strictly optional and just provisions the foundation; Aegis expects to deploy into an existing cluster without relying on Terraform.
 
 ## Technologies Used
 
-Languages and protocols: Go, Python 3.14.1, protobuf, gRPC, JSON event envelopes, Markdown.
+**Languages and protocols:** Go, Python 3.14.1, protobuf, gRPC, JSON event envelopes, Markdown.
+**Distributed systems:** consistent hashing with virtual nodes, Redis TTL membership leases, Redis incident locks, bounded queues, min-heap heartbeat expiry, deterministic incident IDs, idempotent Kafka consumers, retry and DLQ topics.
+**Infrastructure:** Kubernetes, Helm, Kustomize, Kind, Minikube/k3d-compatible overlays, Tilt, KEDA, Terraform, mise.
+**Data and messaging:** Kafka, Redis, MinIO for local validation.
+**Observability:** trace correlation IDs.
+**AI integration:** OpenAI-compatible inference endpoint (vLLM or KServe).
+**Security and hardening:** Kubernetes Secrets, optional gRPC mTLS wiring, Kafka authentication and ACL notes, Redis authentication, NetworkPolicy, least-privilege ServiceAccounts, rate limiting, secret rotation notes.
 
-Distributed systems: consistent hashing with virtual nodes, Redis TTL membership leases, Redis incident locks, bounded queues, min-heap heartbeat expiry, deterministic incident IDs, idempotent Kafka consumers, retry and DLQ topics.
-
-Infrastructure: Kubernetes, Helm, Kustomize, Kind, Minikube/k3d-compatible overlays, Tilt, KEDA, Terraform, mise.
-
-Data and messaging: Kafka, Redis, MinIO for local validation.
-
-Observability: trace correlation IDs.
-
-AI integration: OpenAI-compatible inference endpoint such as vLLM or KServe.
-
-Security and hardening: Kubernetes Secrets, optional gRPC mTLS wiring, Kafka authentication and ACL notes, Redis authentication, NetworkPolicy, least-privilege ServiceAccounts, rate limiting, secret rotation notes.
-
-Version pins are tracked in `VERSION_LEDGER.md`.
+*(Version pins are tightly tracked in `VERSION_LEDGER.md`)*
 
 ## API Reference
 

@@ -1,0 +1,12 @@
+dependencies:
+- name: kafka
+  repository: https://charts.bitnami.com/bitnami
+  version: 31.3.1
+- name: redis
+  repository: https://charts.bitnami.com/bitnami
+  version: 25.3.2
+- name: mailpit
+  repository: https://jouve.github.io/charts/
+  version: 0.34.1
+digest: sha256:979cb04da48570b8f8a00d937ee6ca22b331320ed09a73bd8445a98fc868b06d
+generated: "2026-07-10T19:38:53.779404+01:00"

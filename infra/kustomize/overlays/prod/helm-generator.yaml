@@ -1,0 +1,10 @@
+apiVersion: builtin
+kind: HelmChartInflationGenerator
+metadata:
+  name: aegis
+name: aegis
+chartHome: ../../../helm
+releaseName: aegis
+namespace: aegis-system
+valuesFile: values-prod.yaml
+includeCRDs: true

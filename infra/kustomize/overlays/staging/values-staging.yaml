@@ -1,0 +1,30 @@
+agent:
+  image: "aegis-agent:latest"
+  imagePullPolicy: Never
+  simulationMode: "normal"
+
+composer:
+  image: "aegis-composer:latest"
+  imagePullPolicy: Never
+
+controlPlane:
+  image: "aegis-control-plane:latest"
+  imagePullPolicy: Never
+
+sink:
+  image: "aegis-sink:latest"
+  imagePullPolicy: Never
+
+kafka:
+  enabled: true
+
+redis:
+  enabled: true
+
+
+
+mailpit:
+  enabled: false
+
+llm:
+  enabled: true

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Starts Ollama and ensures the configured model is available.
 # OLLAMA_MODEL env var can be overridden at runtime via:
-#   docker run -e OLLAMA_MODEL=llama3.2:3b ...
+#   docker run -e OLLAMA_MODEL=llama3.2:1b ...
 # If not set, falls back to the model baked in at build time.
 
 set -e

@@ -1,38 +1,116 @@
-topics:
-  - name: aegis.incident.detected
-    partitions: 12
-    replication_factor: 3
-    retention_ms: 604800000
-  - name: aegis.diagnostics.requested
-    partitions: 12
-    replication_factor: 3
-    retention_ms: 604800000
-  - name: aegis.diagnostics.collected
-    partitions: 12
-    replication_factor: 3
-    retention_ms: 604800000
-  - name: aegis.postmortem.requested
-    partitions: 12
-    replication_factor: 3
-    retention_ms: 1209600000
-  - name: aegis.postmortem.generated
-    partitions: 12
-    replication_factor: 3
-    retention_ms: 1209600000
-  - name: aegis.postmortem.delivery.requested
-    partitions: 12
-    replication_factor: 3
-    retention_ms: 1209600000
-  - name: aegis.postmortem.delivery.status
-    partitions: 12
-    replication_factor: 3
-    retention_ms: 1209600000
-  - name: aegis.postmortem.delivery.retry
-    partitions: 6
-    replication_factor: 3
-    retention_ms: 1209600000
-  - name: aegis.postmortem.delivery.dlq
-    partitions: 3
-    replication_factor: 3
-    retention_ms: 2592000000
-
+meta:
+  name: aegis.incident.detected
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "604800000"
+---
+meta:
+  name: aegis.diagnostics.requested
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "604800000"
+---
+meta:
+  name: aegis.diagnostics.collected
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "604800000"
+---
+meta:
+  name: aegis.postmortem.requested
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "1209600000"
+---
+meta:
+  name: aegis.postmortem.generated
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "1209600000"
+---
+meta:
+  name: aegis.postmortem.delivery.requested
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "1209600000"
+---
+meta:
+  name: aegis.postmortem.delivery.status
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "1209600000"
+---
+meta:
+  name: aegis.postmortem.delivery.retry
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 6
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "1209600000"
+---
+meta:
+  name: aegis.postmortem.delivery.dlq
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 3
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    retention.ms: "2592000000"

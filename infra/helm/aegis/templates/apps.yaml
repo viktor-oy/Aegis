@@ -1,0 +1,305 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: aegis-agent
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      {{- include "aegis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        {{- include "aegis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+    spec:
+      {{- if .Values.agent.securityContext }}
+      securityContext:
+        {{- toYaml .Values.agent.securityContext | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: {{ required "agent.image is required" .Values.agent.image | quote }}
+          imagePullPolicy: {{ .Values.agent.imagePullPolicy | default "IfNotPresent" | quote }}
+          env:
+            - name: AEGIS_CP_BOOTSTRAP_URLS
+              value: {{ .Values.agent.bootstrapUrls | default "aegis-control-plane:50051" | quote }}
+            - name: AEGIS_WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AEGIS_SIMULATION_MODE
+              value: {{ .Values.agent.simulationMode | default "normal" | quote }}
+            - name: AEGIS_TELEMETRY_DATA_SOURCE
+              value: {{ .Values.agent.telemetryDataSource | default "MOCK" | quote }}
+            - name: AEGIS_AGENT_API_PORT
+              value: {{ .Values.agent.apiPort | default 8080 | quote }}
+          ports:
+            - containerPort: {{ .Values.agent.apiPort | default 8080 }}
+              name: http
+          {{- if .Values.agent.resources }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.agent.securityContext }}
+          securityContext:
+            {{- toYaml .Values.agent.securityContext | nindent 12 }}
+          {{- end }}
+{{- end }}
+---
+{{- if .Values.composer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-composer
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: composer
+spec:
+  replicas: {{ .Values.composer.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "aegis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: composer
+  template:
+    metadata:
+      labels:
+        {{- include "aegis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: composer
+    spec:
+      {{- if .Values.composer.securityContext }}
+      securityContext:
+        {{- toYaml .Values.composer.securityContext | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: composer
+          image: {{ required "composer.image is required" .Values.composer.image | quote }}
+          imagePullPolicy: {{ .Values.composer.imagePullPolicy | default "IfNotPresent" | quote }}
+          ports:
+            - containerPort: {{ .Values.composer.port | default 8080 }}
+              name: http
+          env:
+            - name: AEGIS_KAFKA_BOOTSTRAP_SERVERS
+              value: {{ required "composer.kafkaBootstrapServers is required" .Values.composer.kafkaBootstrapServers | quote }}
+            - name: AEGIS_COMPOSER_GROUP_ID
+              value: {{ .Values.composer.groupId | default "aegis-postmortem-composer" | quote }}
+            - name: AEGIS_COMPOSER_INPUT_TOPIC
+              value: {{ .Values.composer.inputTopic | default "aegis.diagnostics.collected" | quote }}
+            - name: AEGIS_COMPOSER_OUTPUT_TOPIC
+              value: {{ .Values.composer.outputTopic | default "aegis.postmortem.generated" | quote }}
+            - name: AEGIS_LLM_BASE_URL
+              value: {{ required "composer.llmBaseUrl is required when composer is enabled" .Values.composer.llmBaseUrl | quote }}
+            - name: AEGIS_LLM_MODEL
+              value: {{ required "composer.llmModel is required when composer is enabled" .Values.composer.llmModel | quote }}
+            - name: AEGIS_COMPOSER_SYS_ARCH_PROMPT
+              value: ""
+            - name: AEGIS_COMPOSER_FORMAT_PROMPT
+              value: ""
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.composer.port | default 8080 }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.composer.port | default 8080 }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- if .Values.composer.resources }}
+          resources:
+            {{- toYaml .Values.composer.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.composer.securityContext }}
+          securityContext:
+            {{- toYaml .Values.composer.securityContext | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-composer
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: composer
+spec:
+  selector:
+    {{- include "aegis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: composer
+  ports:
+    - port: {{ .Values.composer.port | default 8080 }}
+      targetPort: {{ .Values.composer.port | default 8080 }}
+      name: http
+{{- end }}
+---
+{{- if .Values.controlPlane.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-control-plane-headless
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  clusterIP: None
+  selector:
+    {{- include "aegis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+  ports:
+    - name: grpc
+      port: {{ .Values.controlPlane.grpcPort | default 50051 }}
+      targetPort: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-control-plane
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  selector:
+    {{- include "aegis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+  ports:
+    - name: grpc
+      port: {{ .Values.controlPlane.grpcPort | default 50051 }}
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aegis-control-plane
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  replicas: {{ .Values.controlPlane.replicaCount | default 1 }}
+  serviceName: aegis-control-plane-headless
+  selector:
+    matchLabels:
+      {{- include "aegis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: control-plane
+  template:
+    metadata:
+      labels:
+        {{- include "aegis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: control-plane
+    spec:
+      {{- if .Values.controlPlane.securityContext }}
+      securityContext:
+        {{- toYaml .Values.controlPlane.securityContext | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ required "controlPlane.image is required" .Values.controlPlane.image | quote }}
+          imagePullPolicy: {{ .Values.controlPlane.imagePullPolicy | default "IfNotPresent" | quote }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.controlPlane.grpcPort | default 50051 }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: AEGIS_CP_ID
+              value: "$(POD_NAME)"
+            - name: AEGIS_CP_ADDRESS
+              value: "$(POD_NAME).aegis-control-plane-headless.{{ include "aegis.namespace" . }}.svc.cluster.local:{{ .Values.controlPlane.grpcPort | default 50051 }}"
+            - name: AEGIS_GRPC_ADDRESS
+              value: ":{{ .Values.controlPlane.grpcPort | default 50051 }}"
+            - name: AEGIS_REDIS_ADDR
+              value: {{ required "controlPlane.redisAddr is required" .Values.controlPlane.redisAddr | quote }}
+            - name: AEGIS_KAFKA_BROKERS
+              value: {{ required "controlPlane.kafkaBrokers is required" .Values.controlPlane.kafkaBrokers | quote }}
+          {{- if .Values.controlPlane.resources }}
+          resources:
+            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.controlPlane.securityContext }}
+          securityContext:
+            {{- toYaml .Values.controlPlane.securityContext | nindent 12 }}
+          {{- end }}
+{{- end }}
+---
+{{- if .Values.sink.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-sink
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sink
+spec:
+  replicas: {{ .Values.sink.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "aegis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sink
+  template:
+    metadata:
+      labels:
+        {{- include "aegis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: sink
+    spec:
+      {{- if .Values.sink.securityContext }}
+      securityContext:
+        {{- toYaml .Values.sink.securityContext | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: sink
+          image: {{ required "sink.image is required" .Values.sink.image | quote }}
+          imagePullPolicy: {{ .Values.sink.imagePullPolicy | default "IfNotPresent" | quote }}
+          env:
+            - name: AEGIS_DEBUG
+              value: {{ .Values.sink.debug | default "false" | quote }}
+            - name: AEGIS_KAFKA_BROKERS
+              value: {{ required "sink.kafkaBrokers is required" .Values.sink.kafkaBrokers | quote }}
+            {{- if .Values.sink.fileSink }}
+            - name: AEGIS_FILE_SINK_ENABLED
+              value: {{ .Values.sink.fileSink.enabled | default false | quote }}
+            {{- if .Values.sink.fileSink.enabled }}
+            - name: AEGIS_FILE_SINK_PATH
+              value: {{ required "sink.fileSink.path is required when fileSink is enabled" .Values.sink.fileSink.path | quote }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - containerPort: 8081
+          {{- if .Values.sink.resources }}
+          resources:
+            {{- toYaml .Values.sink.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.sink.securityContext }}
+          securityContext:
+            {{- toYaml .Values.sink.securityContext | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-sink
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sink
+spec:
+  selector:
+    {{- include "aegis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: sink
+  ports:
+    - protocol: TCP
+      port: 8081
+      targetPort: 8081
+{{- end }}

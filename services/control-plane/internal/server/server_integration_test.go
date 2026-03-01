@@ -37,9 +37,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	cleanup := testutils.EnsureInfra([]string{"kafka", "redis"}, "../../../../Tiltfile.infra")
 	code := m.Run()
-	cleanup()
 	os.Exit(code)
 }
 
@@ -47,6 +45,7 @@ func TestMain(m *testing.M) {
 // Returns the client connection. Teardown happens automatically on process exit.
 func startTestServer(t *testing.T) aegisv1.ControlPlaneTelemetryClient {
 	t.Helper()
+	testutils.LogInfo(t, "🚀 Starting embedded CP test servers...")
 
 	globalServerOnce.Do(func() {
 		// Clean up Redis state for testing
@@ -149,19 +148,20 @@ func startTestServer(t *testing.T) aegisv1.ControlPlaneTelemetryClient {
 
 func readExpectedEvents(t *testing.T, brokers []string, workerID string, expectedTopics []string) []state.EventEnvelope {
 	t.Helper()
+	testutils.LogInfo(t, "📖 Waiting for %d expected events on Kafka for worker %s...", len(expectedTopics), workerID)
 	var events []state.EventEnvelope
 	for _, topic := range expectedTopics {
 		found := make(chan state.EventEnvelope, 1)
 
-		// The Kafka topics have 3 partitions. We must read from all 3 to find the event,
-		// because the publisher hashes the workerID to determine the partition.
-		for p := 0; p < 3; p++ {
+		numPartitions := testutils.GetTopicPartitionCount(topic, "../../../../infra/kafka/topics.yaml")
+		for p := 0; p < numPartitions; p++ {
 			go func(partition int) {
 				reader := segmentiokafka.NewReader(segmentiokafka.ReaderConfig{
 					Brokers:   brokers,
 					Topic:     topic,
 					Partition: partition,
 				})
+				_ = reader.SetOffset(segmentiokafka.FirstOffset)
 				defer reader.Close()
 
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -223,15 +223,18 @@ func getWorkerForCP(t *testing.T, targetCP string) string {
 
 func assertNoEvents(t *testing.T, brokers []string, workerID string, topic string) {
 	t.Helper()
+	testutils.LogInfo(t, "🛡️ Verifying NO events are published for worker %s on %s...", workerID, topic)
 	found := make(chan struct{}, 1)
 
-	for p := 0; p < 3; p++ {
+	numPartitions := testutils.GetTopicPartitionCount(topic, "../../../../infra/kafka/topics.yaml")
+	for p := 0; p < numPartitions; p++ {
 		go func(partition int) {
 			reader := segmentiokafka.NewReader(segmentiokafka.ReaderConfig{
 				Brokers:   brokers,
 				Topic:     topic,
 				Partition: partition,
 			})
+			_ = reader.SetOffset(segmentiokafka.FirstOffset)
 			defer reader.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -267,6 +270,7 @@ func assertNoEvents(t *testing.T, brokers []string, workerID string, topic strin
 }
 
 func TestIntegration_StreamTelemetry_Accepted(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
 	client := startTestServer(t)
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -300,6 +304,7 @@ func TestIntegration_StreamTelemetry_Accepted(t *testing.T) {
 }
 
 func TestIntegration_StreamTelemetry_Redirect(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
 	// Two CP members; worker hashing will route to one of them.
 	client := startTestServer(t)
 
@@ -337,6 +342,7 @@ func TestIntegration_StreamTelemetry_Redirect(t *testing.T) {
 }
 
 func TestIntegration_StreamTelemetry_ResourceExhausted(t *testing.T) {
+	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected,aegis.diagnostics.requested")
 	client := startTestServer(t)
 
 	// Since queue size is 256 globally, we need to flood the queue to exhaust it.
@@ -407,6 +413,7 @@ func TestIntegration_StreamTelemetry_ResourceExhausted(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
+	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected")
 	client := startTestServer(t)
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -465,6 +472,7 @@ func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
+	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected,aegis.diagnostics.requested")
 	client := startTestServer(t)
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -497,6 +505,7 @@ func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_ModelUnhealthyImmediate(t *testing.T) {
+	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected")
 	client := startTestServer(t)
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -531,6 +540,7 @@ func TestIntegration_TelemetryProcessing_ModelUnhealthyImmediate(t *testing.T) {
 }
 
 func TestIntegration_SubmitDiagnostics_Accepted(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
 	client := startTestServer(t)
 
 	ack, err := client.SubmitDiagnostics(context.Background(), &aegisv1.DiagnosticBundle{
@@ -549,6 +559,7 @@ func TestIntegration_SubmitDiagnostics_Accepted(t *testing.T) {
 }
 
 func TestIntegration_SubmitDiagnostics_InvalidArgument(t *testing.T) {
+	testutils.WipeTestState(t, "")
 	client := startTestServer(t)
 
 	// Missing required fields.

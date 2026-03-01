@@ -29,7 +29,7 @@ func (p *KafkaPublisher) Publish(ctx context.Context, topic string, envelope sta
 		Topic:                  topic,
 		Balancer:               &kafka.Hash{},
 		RequiredAcks:           kafka.RequireOne, // Configurable if needed
-		AllowAutoTopicCreation: true,
+		AllowAutoTopicCreation: false,
 	}
 	defer writer.Close()
 
