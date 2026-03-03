@@ -1,0 +1,60 @@
+global:
+  namespace: aegis-system
+  imagePullPolicy: IfNotPresent
+
+images:
+  controlPlane: aegis/control-plane:0.1.0
+  agent: aegis/agent:0.1.0
+  composer: aegis/composer:0.1.0
+  sinkWorker: aegis/sink-worker:0.1.0
+  kafka: apache/kafka:4.1.1
+  redis: redis:8.0.2
+  postgres: postgres:18.2
+  minio: minio/minio:RELEASE.2025-04-22T22-12-26Z
+  otelCollector: otel/opentelemetry-collector-contrib:0.151.0
+
+controlPlane:
+  replicas: 3
+  grpcPort: 50051
+  httpPort: 8080
+  queueSize: 256
+
+agent:
+  telemetryDataSource: MOCK
+  simulationMode: normal
+  heartbeatIntervalSeconds: 5
+
+composer:
+  replicas: 2
+  inputTopic: aegis.diagnostics.collected
+  outputTopic: aegis.postmortem.generated
+  llmBaseUrl: http://vllm.aegis-system.svc.cluster.local:8000
+  llmModel: meta-llama/Llama-3.1-8B-Instruct
+
+sinkWorker:
+  replicas: 2
+  s3Bucket: aegis-postmortems
+
+kafka:
+  bootstrapServers: kafka:9092
+
+redis:
+  address: redis:6379
+
+postgresql:
+  dsnSecretName: aegis-postgres
+  dsnSecretKey: dsn
+
+slack:
+  webhookSecretName: aegis-slack
+  webhookSecretKey: webhook-url
+
+minio:
+  endpoint: http://minio:9000
+  bucket: aegis-postmortems
+
+keda:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+

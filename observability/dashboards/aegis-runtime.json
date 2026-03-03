@@ -1,0 +1,31 @@
+{
+  "title": "Aegis Runtime",
+  "panels": [
+    {
+      "title": "Control Plane Queue Depth",
+      "type": "timeseries",
+      "targets": [{"expr": "aegis_cp_queue_depth"}]
+    },
+    {
+      "title": "Ring Rebuilds",
+      "type": "timeseries",
+      "targets": [{"expr": "increase(aegis_cp_ring_rebuild_total[5m])"}]
+    },
+    {
+      "title": "Incidents Detected",
+      "type": "timeseries",
+      "targets": [{"expr": "increase(aegis_incidents_total[5m])"}]
+    },
+    {
+      "title": "Composer Kafka Lag",
+      "type": "timeseries",
+      "targets": [{"expr": "kafka_consumergroup_lag{consumer_group=\"aegis-postmortem-composer\"}"}]
+    },
+    {
+      "title": "Delivery Failures and DLQ",
+      "type": "timeseries",
+      "targets": [{"expr": "increase(aegis_delivery_failed_total[5m]) + increase(aegis_delivery_dlq_total[5m])"}]
+    }
+  ]
+}
+

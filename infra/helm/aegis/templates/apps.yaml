@@ -1,0 +1,153 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-control-plane
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.controlPlane.replicas }}
+  selector:
+    matchLabels:
+      app: aegis-control-plane
+  template:
+    metadata:
+      labels:
+        app: aegis-control-plane
+    spec:
+      serviceAccountName: aegis-control-plane
+      containers:
+        - name: control-plane
+          image: {{ .Values.images.controlPlane }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.controlPlane.grpcPort }}
+              name: grpc
+            - containerPort: {{ .Values.controlPlane.httpPort }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: aegis-config
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-control-plane
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: aegis-control-plane
+  ports:
+    - name: grpc
+      port: {{ .Values.controlPlane.grpcPort }}
+      targetPort: grpc
+    - name: http
+      port: {{ .Values.controlPlane.httpPort }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: aegis-agent
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: aegis-agent
+  template:
+    metadata:
+      labels:
+        app: aegis-agent
+    spec:
+      serviceAccountName: aegis-agent
+      containers:
+        - name: agent
+          image: {{ .Values.images.agent }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: aegis-config
+          env:
+            - name: AEGIS_CP_BOOTSTRAP_URLS
+              value: aegis-control-plane.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.controlPlane.grpcPort }}
+            - name: AEGIS_WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            readOnlyRootFilesystem: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-composer
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.composer.replicas }}
+  selector:
+    matchLabels:
+      app: aegis-composer
+  template:
+    metadata:
+      labels:
+        app: aegis-composer
+    spec:
+      serviceAccountName: aegis-composer
+      containers:
+        - name: composer
+          image: {{ .Values.images.composer }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: aegis-config
+          env:
+            - name: AEGIS_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-llm
+                  key: api-key
+                  optional: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-sink-worker
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.sinkWorker.replicas }}
+  selector:
+    matchLabels:
+      app: aegis-sink-worker
+  template:
+    metadata:
+      labels:
+        app: aegis-sink-worker
+    spec:
+      serviceAccountName: aegis-sink-worker
+      containers:
+        - name: sink-worker
+          image: {{ .Values.images.sinkWorker }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: aegis-config
+          env:
+            - name: AEGIS_S3_BUCKET
+              value: {{ .Values.sinkWorker.s3Bucket | quote }}
+            - name: AEGIS_POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.dsnSecretName }}
+                  key: {{ .Values.postgresql.dsnSecretKey }}
+            - name: AEGIS_SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.slack.webhookSecretName }}
+                  key: {{ .Values.slack.webhookSecretKey }}
+

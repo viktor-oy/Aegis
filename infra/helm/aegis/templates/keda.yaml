@@ -1,0 +1,56 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: aegis-control-plane-queue
+  namespace: {{ .Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    name: aegis-control-plane
+  minReplicaCount: {{ .Values.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        metricName: aegis_cp_queue_depth
+        threshold: "128"
+        query: avg(aegis_cp_queue_depth)
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: aegis-composer-kafka-lag
+  namespace: {{ .Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    name: aegis-composer
+  minReplicaCount: 1
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ .Values.kafka.bootstrapServers | quote }}
+        consumerGroup: aegis-postmortem-composer
+        topic: {{ .Values.composer.inputTopic | quote }}
+        lagThreshold: "10"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: aegis-sink-worker-kafka-lag
+  namespace: {{ .Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    name: aegis-sink-worker
+  minReplicaCount: 1
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ .Values.kafka.bootstrapServers | quote }}
+        consumerGroup: aegis-sink-workers
+        topic: aegis.postmortem.generated
+        lagThreshold: "10"
+{{- end }}
+

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegis-config
+  namespace: {{ .Values.global.namespace }}
+data:
+  AEGIS_KAFKA_BOOTSTRAP_SERVERS: {{ .Values.kafka.bootstrapServers | quote }}
+  AEGIS_REDIS_ADDRESS: {{ .Values.redis.address | quote }}
+  AEGIS_COMPOSER_INPUT_TOPIC: {{ .Values.composer.inputTopic | quote }}
+  AEGIS_COMPOSER_OUTPUT_TOPIC: {{ .Values.composer.outputTopic | quote }}
+  AEGIS_LLM_BASE_URL: {{ .Values.composer.llmBaseUrl | quote }}
+  AEGIS_LLM_MODEL: {{ .Values.composer.llmModel | quote }}
+  AEGIS_TELEMETRY_DATA_SOURCE: {{ .Values.agent.telemetryDataSource | quote }}
+  AEGIS_SIMULATION_MODE: {{ .Values.agent.simulationMode | quote }}
+  AEGIS_HEARTBEAT_INTERVAL_SECONDS: {{ .Values.agent.heartbeatIntervalSeconds | quote }}
+

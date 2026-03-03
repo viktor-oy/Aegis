@@ -1,0 +1,10 @@
+controlPlane:
+  replicas: 2
+agent:
+  telemetryDataSource: MOCK
+  simulationMode: normal
+composer:
+  llmBaseUrl: http://vllm.aegis-system.svc.cluster.local:8000
+keda:
+  minReplicas: 1
+  maxReplicas: 4

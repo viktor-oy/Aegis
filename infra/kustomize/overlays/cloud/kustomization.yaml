@@ -1,0 +1,11 @@
+namespace: aegis-system
+resources:
+  - ../../base
+helmCharts:
+  - name: aegis
+    releaseName: aegis
+    namespace: aegis-system
+    repo: file://../../../helm
+    valuesFile: ../../../helm/aegis/values.yaml
+    additionalValuesFiles:
+      - values-cloud.yaml
