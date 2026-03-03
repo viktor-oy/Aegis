@@ -24,6 +24,5 @@ def wipe_infra_state(targets: str = ""):
         
     import sys
     env = os.environ.copy()
-    if "AEGIS_KUBE_CONTEXT" not in env:
-        env["AEGIS_KUBE_CONTEXT"] = "kind-aegis-intg-test"
+    env["AEGIS_KUBE_CONTEXT"] = "kind-aegis-intg-test"
     subprocess.run(cmd, cwd=root_dir, env=env, check=True, stdout=sys.stdout, stderr=sys.stderr)

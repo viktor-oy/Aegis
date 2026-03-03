@@ -1,6 +1,18 @@
 SHELL := /bin/sh
 TILT_TEST_LOG ?= /tmp/aegis_tilt_test.log
+VERBOSE ?= 0
+
+ifeq ($(VERBOSE),1)
+	PYTEST_FLAGS := -s --color=yes --log-cli-level=INFO
+	GOTESTSUM_FLAGS := --format standard-verbose
+else
+	PYTEST_FLAGS := --color=yes --log-cli-level=WARNING
+	GOTESTSUM_FLAGS := --format testname
+endif
+
 export TILT_TEST_LOG
+export VERBOSE
+export AEGIS_KUBE_CONTEXT
 
 .PHONY: help lint test test-unit test-intg test-python test-go tilt-infra-up proto docs-check tf-init tf-up tf-down dev-up init-kafka
 
@@ -21,39 +33,39 @@ test-intg: test-agent-intg test-control-plane-intg test-composer-intg test-sink-
 test-composer: test-composer-unit test-composer-intg
 
 test-composer-unit:
-	PYTHONPATH=. python3 -m pytest -s --log-cli-level=INFO tests/unit/composer || true
+	PYTHONPATH=. python3 -m pytest $(PYTEST_FLAGS) tests/unit/composer || true
 
 test-composer-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	PYTHONPATH=. python3 -m pytest -s --color=yes --log-cli-level=INFO tests/integration/composer
+	PYTHONPATH=. python3 -m pytest $(PYTEST_FLAGS) tests/integration/composer
 
 test-agent: test-agent-unit test-agent-intg
 
 test-agent-unit:
-	PYTHONPATH=.:gen/python python3 -m pytest -s --color=yes --log-cli-level=INFO tests/unit/agent || true
+	PYTHONPATH=.:gen/python python3 -m pytest $(PYTEST_FLAGS) tests/unit/agent || true
 
 test-agent-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	PYTHONPATH=.:gen/python python3 -m pytest -s --color=yes --log-cli-level=INFO tests/integration/agent
+	PYTHONPATH=.:gen/python python3 -m pytest $(PYTEST_FLAGS) tests/integration/agent
 
 test-control-plane: test-control-plane-unit test-control-plane-intg
 
 test-control-plane-unit:
 	go clean -testcache
-	go run gotest.tools/gotestsum@latest --format standard-verbose -- ./...
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- ./...
 
 test-control-plane-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	go run gotest.tools/gotestsum@latest --format standard-verbose -- ./services/control-plane/internal/server/server_integration_test.go
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- ./services/control-plane/internal/server/server_integration_test.go
 
 test-sink: test-sink-unit test-sink-intg
 
 test-sink-unit:
-	go run gotest.tools/gotestsum@latest --format standard-verbose -- ./services/sink/...
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- ./services/sink/...
 
 test-sink-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	go run gotest.tools/gotestsum@latest --format standard-verbose -- -tags=integration ./services/sink
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -tags=integration ./services/sink
 
 
 tilt-infra-up:
@@ -62,10 +74,8 @@ tilt-infra-up:
 tilt-test-infra-up: clear-test-ports
 	AEGIS_ENV=intg-test tilt up --port 10352 --context kind-aegis-intg-test -f Tiltfile.infra
 
-KUBE_CONTEXT ?= kind-aegis
-
 init-kafka:
-	kubectl --context $(KUBE_CONTEXT) wait --for=condition=ready pod -l app.kubernetes.io/name=kafka -n aegis-system --timeout=300s
+	kubectl --context $(AEGIS_KUBE_CONTEXT) wait --for=condition=ready pod -l app.kubernetes.io/name=kafka -n aegis-system --timeout=300s
 	topicctl apply infra/kafka/topics.yaml --cluster-config infra/kafka/cluster.yaml --skip-confirm
 
 wipe-infra-state:

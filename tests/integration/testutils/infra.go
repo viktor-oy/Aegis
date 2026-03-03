@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 // WipeTestState wipes the specified infrastructure ("redis", "kafka", or "" for all).
@@ -37,7 +38,14 @@ func WipeTestState(t *testing.T, targets string) {
 
 	cmd := exec.Command("make", args...)
 	cmd.Dir = rootDir
-	cmd.Env = append(os.Environ(), "AEGIS_KUBE_CONTEXT=kind-aegis-intg-test")
+	env := os.Environ()
+	cleanEnv := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, "AEGIS_KUBE_CONTEXT=") {
+			cleanEnv = append(cleanEnv, e)
+		}
+	}
+	cmd.Env = append(cleanEnv, "AEGIS_KUBE_CONTEXT=kind-aegis-intg-test")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
