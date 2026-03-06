@@ -17,7 +17,10 @@ def build_prompt(
     diagnostic_event: dict[str, object], 
     sys_arch: str = "",
     format_prompt: str = "",
-    guidance: dict[str, object] | None = None
+    guidance: dict[str, object] | None = None,
+    label_worker_id: str = "Worker ID",
+    label_incident_id: str = "Incident ID",
+    label_event_id: str = "Event ID",
 ) -> str:
     payload = diagnostic_event.get("payload", {})
     incident_id = str(diagnostic_event.get("incident_id", "unknown"))
@@ -29,12 +32,15 @@ def build_prompt(
         "Write an incident postmortem for Aegis.\n"
         "This is an initial, pre-fix postmortem. The issue has just emerged and is NOT yet resolved. Focus on immediate diagnosis.\n\n"
         "### Context Data\n"
-        f"Event ID: {event_id}\n"
-        f"Incident ID: {incident_id}\n"
-        f"Worker ID: {worker_id}\n"
+        f"{label_event_id}: {event_id}\n"
+        f"{label_incident_id}: {incident_id}\n"
+        f"{label_worker_id}: {worker_id}\n"
         f"Audience: {guidance.get('audience', 'infrastructure engineers')}\n"
         f"Severity context: {guidance.get('severity', payload.get('severity', 'unknown'))}\n"
         f"Extra guidance: {guidance.get('extra_prompt', 'none')}\n\n"
+        "### STRICT GUIDANCE\n"
+        "If the diagnostic data does not explicitly state the cause of the failure, DO NOT hallucinate one. "
+        "Specifically, do NOT assume or invent 'temperature issues' or 'overheating' unless temperature spikes are explicitly present in the data.\n\n"
         "### Required Markdown Sections (in order):\n"
         f"{sections}\n\n"
         "### System Architecture Context:\n"

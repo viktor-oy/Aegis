@@ -62,9 +62,11 @@ Tilt applies the Helm/Kustomize artifacts. We use live update rules so your Pyth
 - `AEGIS_COMPOSER_OUTPUT_TOPIC`: Kafka topic Composer publishes postmortems to.
 
 #### Prompt Injection Overrides
-Composer embeds its default system architecture and formatting prompts from the internal `/workspace/services/composer/prompts/` directory. You can easily override these by passing raw markdown strings into these env vars:
+Composer embeds its default system architecture and formatting prompts from the internal `/workspace/services/composer/prompts/` directory. You can override these by passing raw markdown strings into these env vars:
 - `AEGIS_COMPOSER_SYS_ARCH_PROMPT`: Overrides the system architecture context.
 - `AEGIS_COMPOSER_FORMAT_PROMPT`: Overrides the LLM formatting guidelines.
+
+Alternatively, you can volume mount your custom markdown files directly into the `/workspace/services/composer/prompts/` directory (e.g., overriding `postmortem-format.md` or `system-architecture.md`) to replace the default prompts without using environment variables.
 
 - `aegis-sink`: The Go Kafka consumer that handles the final delivery of postmortems to File systems and Email.
 - `mock-slack`: A dummy webhook receiver we use for local testing (not for production).
@@ -140,6 +142,8 @@ Root-level test layout:
 
 ### Engineering Decisions & Test Infrastructure
 
+1. **Default Worker ID Formatting**: The default `Worker ID` for agents is intentionally formatted as a composite key (`$(POD_NAMESPACE)--$(POD_NAME)`) injected via the Downward API, rather than a raw pod name or UUID. This allows the SRE/developer reading the generated postmortem to instantly identify the namespace and specific node pod that failed, speeding up incident response times.
+
 To keep testing consistent, output clean, and performance highly optimized across local/CI, we enforce a few strict conventions:
 
 1. **Go Test Runner (`gotestsum`)**: We don't natively run `go test` because it can be messy. The `Makefile` auto-downloads `gotest.tools/gotestsum@latest` for all Go tests. You get beautifully formatted, colorized output and clean summaries, and we pass `--format standard-verbose` to make sure logs still stream in real-time.
@@ -164,6 +168,7 @@ To run tests individually while leveraging all our custom formatting and state c
 - **Clear test ports manually**: `make clear-test-ports` (terminates any zombie processes occupying test infra ports)
 - **Run specific Go integration test**: `go run gotest.tools/gotestsum@latest --format standard-verbose -- ./services/sink -run TestSinkServiceIntegration_FileSink`
 - **Run specific Python integration test**: `PYTHONPATH=.:gen/python python3 -m pytest -s --color=yes --log-cli-level=INFO tests/integration/agent/test_agent_integration.py::test_grpc_stream_accepted`
+  > **Note for Composer Tests:** The Composer integration test (`test_composer_integration.py`) generates a real postmortem using the local LLM and writes the resulting markdown file to `docs/services/composer/local/artifacts/` for manual inspection.
 - **Wipe infra state manually**: `AEGIS_KUBE_CONTEXT="kind-aegis" make wipe-infra-state TARGETS="redis,kafka:aegis.telemetry,aegis.events"` (You can specify exact Kafka topics as subtargets. The `AEGIS_KUBE_CONTEXT` environment variable governs which cluster is targeted; you MUST provide it explicitly. If wiping your dev cluster, pass `AEGIS_KUBE_CONTEXT="kind-aegis"`. If wiping tests, pass `AEGIS_KUBE_CONTEXT="kind-aegis-intg-test"`).
 
 **Useful Flags:**

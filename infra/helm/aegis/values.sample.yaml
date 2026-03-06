@@ -9,6 +9,7 @@ agent:
   imagePullPolicy: IfNotPresent
   simulationMode: "normal"
   telemetryDataSource: "MOCK"
+  workerIdFormat: "$(POD_NAMESPACE)--$(POD_NAME)"
   resources:
     requests:
       cpu: 10m
@@ -32,6 +33,11 @@ composer:
   kafkaBootstrapServers: "aegis-kafka:9092"
   llmBaseUrl: "http://aegis-llm.aegis-system.svc.cluster.local:11434/v1"
   llmModel: "llama3.2:1b"
+  postmortem:
+    labels:
+      workerId: "Worker ID [{{ .Release.Namespace }}]"
+      incidentId: "Incident ID"
+      eventId: "Event ID"
   resources:
     requests:
       cpu: 10m

@@ -35,7 +35,7 @@ func TestWorker_Deliver(t *testing.T) {
 
 	pm := Postmortem{
 		IncidentID: "test-incident",
-		WorkerID:   "test-worker",
+		WorkerID:   "aegis-system--test-worker",
 	}
 
 	results, err := worker.Deliver(context.Background(), pm)

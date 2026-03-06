@@ -10,6 +10,7 @@ agent:
   simulationMode: "normal"
   telemetryDataSource: "MOCK"
   bootstrapUrls: "aegis-control-plane:50051"
+  workerIdFormat: "$(POD_NAMESPACE)--$(POD_NAME)"
   apiPort: 8080
   resources:
     requests:
@@ -38,6 +39,11 @@ composer:
   llmBaseUrl: "http://aegis-llm.aegis-system.svc.cluster.local:11434/v1"
   llmModel: "llama3.2:1b"
   port: 8080
+  postmortem:
+    labels:
+      workerId: "Worker ID [{{ .Release.Namespace }}]"
+      incidentId: "Incident ID"
+      eventId: "Event ID"
   resources:
     requests:
       cpu: 10m

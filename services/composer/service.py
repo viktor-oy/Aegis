@@ -62,6 +62,10 @@ class ComposerService:
         self.inference_client = inference_client
         self.prompt_version = prompt_version
         
+        self.label_worker_id = os.getenv("POSTMORTEM_LABEL_WORKER_ID", "Worker ID")
+        self.label_incident_id = os.getenv("POSTMORTEM_LABEL_INCIDENT_ID", "Incident ID")
+        self.label_event_id = os.getenv("POSTMORTEM_LABEL_EVENT_ID", "Event ID")
+        
         prompts_dir = Path(__file__).parent / "prompts"
         self.sys_arch = load_prompt_string(
             "AEGIS_COMPOSER_SYS_ARCH_PROMPT",
@@ -88,7 +92,10 @@ class ComposerService:
             diagnostic_event=diagnostic_event, 
             sys_arch=self.sys_arch, 
             format_prompt=self.format_prompt, 
-            guidance=guidance
+            guidance=guidance,
+            label_worker_id=self.label_worker_id,
+            label_incident_id=self.label_incident_id,
+            label_event_id=self.label_event_id,
         )
         
         logger.info(f"Sending prompt to LLM for incident {incident_id}")

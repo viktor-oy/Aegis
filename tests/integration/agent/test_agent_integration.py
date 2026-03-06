@@ -76,7 +76,7 @@ async def agent_setup():
     
     def _create(target: str):
         config = AgentConfig(
-            worker_id="test-worker",
+            worker_id="aegis-system--test-worker",
             bootstrap_urls=[target],
             heartbeat_interval_seconds=0.1,
             simulation_mode="normal",
@@ -178,20 +178,20 @@ async def test_agent_api_health():
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_agent_diagnostics_buffer_read():
-    app.state.buffer = DiagnosticBuffer(worker_id="test-worker", max_items=10)
+    app.state.buffer = DiagnosticBuffer(worker_id="aegis-system--test-worker", max_items=10)
     app.state.buffer.add_event("test_event", {"info": "test"})
     
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/diagnostics/buffer")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["worker_id"] == "test-worker"
+        assert data["worker_id"] == "aegis-system--test-worker"
         assert "failure_indicators" in data
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_agent_simulate_failure():
-    app.state.collector = SyntheticCollector("test-worker")
+    app.state.collector = SyntheticCollector("aegis-system--test-worker")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/simulate", json={"mode": "model_crash"})
         assert resp.status_code == 200

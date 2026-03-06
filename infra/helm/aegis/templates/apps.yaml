@@ -29,10 +29,16 @@ spec:
           env:
             - name: AEGIS_CP_BOOTSTRAP_URLS
               value: {{ .Values.agent.bootstrapUrls | default "aegis-control-plane:50051" | quote }}
-            - name: AEGIS_WORKER_ID
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: AEGIS_WORKER_ID
+              value: {{ .Values.agent.workerIdFormat | default "$(POD_NAMESPACE)--$(POD_NAME)" | quote }}
             - name: AEGIS_SIMULATION_MODE
               value: {{ .Values.agent.simulationMode | default "normal" | quote }}
             - name: AEGIS_TELEMETRY_DATA_SOURCE
@@ -97,6 +103,12 @@ spec:
               value: {{ required "composer.llmBaseUrl is required when composer is enabled" .Values.composer.llmBaseUrl | quote }}
             - name: AEGIS_LLM_MODEL
               value: {{ required "composer.llmModel is required when composer is enabled" .Values.composer.llmModel | quote }}
+            - name: POSTMORTEM_LABEL_WORKER_ID
+              value: {{ .Values.composer.postmortem.labels.workerId | default "Worker ID" | quote }}
+            - name: POSTMORTEM_LABEL_INCIDENT_ID
+              value: {{ .Values.composer.postmortem.labels.incidentId | default "Incident ID" | quote }}
+            - name: POSTMORTEM_LABEL_EVENT_ID
+              value: {{ .Values.composer.postmortem.labels.eventId | default "Event ID" | quote }}
             - name: AEGIS_COMPOSER_SYS_ARCH_PROMPT
               value: ""
             - name: AEGIS_COMPOSER_FORMAT_PROMPT

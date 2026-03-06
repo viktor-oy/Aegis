@@ -42,7 +42,7 @@ async def run_test() -> None:
         diagnostic_event = {
             "event_id": str(uuid4()),
             "incident_id": incident_id,
-            "worker_id": "test-worker",
+            "worker_id": "aegis-system--test-worker",
             "payload": {
                 "severity": "critical"
             }
@@ -70,8 +70,8 @@ async def run_test() -> None:
                     output_event = json.loads(msg.value.decode("utf-8"))
                     if output_event.get("incident_id") == incident_id:
                         assert output_event["event_type"] == "aegis.postmortem.generated"
-                        # Use lower case test-worker since LLMs might lowercase it
-                        assert "test-worker" in output_event["payload"]["markdown"].lower()
+                        # Use lower case aegis-system--test-worker since LLMs might lowercase it
+                        assert "aegis-system--test-worker" in output_event["payload"]["markdown"].lower()
                         return output_event
             
             output_event = await asyncio.wait_for(wait_for_message(), timeout=180.0)
@@ -82,6 +82,15 @@ async def run_test() -> None:
             assert "critical" in output_event["payload"]["markdown"].lower()
             
             markdown_content = output_event["payload"]["markdown"]
+            
+            # Write markdown artifact to disk
+            import os
+            from pathlib import Path
+            artifact_dir = Path("docs/services/composer/local/artifacts")
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = artifact_dir / f"{incident_id}.md"
+            artifact_path.write_text(markdown_content, encoding="utf-8")
+            print(f"\nWritten generated postmortem to: {artifact_path}\n")
             
             assert diagnostic_event["event_id"] in markdown_content, "Model dropped event_id"
             assert diagnostic_event["incident_id"] in markdown_content, "Model dropped incident_id"
