@@ -96,7 +96,7 @@ spec:
             - name: AEGIS_COMPOSER_GROUP_ID
               value: {{ .Values.composer.groupId | default "aegis-postmortem-composer" | quote }}
             - name: AEGIS_COMPOSER_INPUT_TOPIC
-              value: {{ .Values.composer.inputTopic | default "aegis.diagnostics.collected" | quote }}
+              value: {{ .Values.composer.inputTopic | default "aegis.postmortem.requested" | quote }}
             - name: AEGIS_COMPOSER_OUTPUT_TOPIC
               value: {{ .Values.composer.outputTopic | default "aegis.postmortem.generated" | quote }}
             - name: AEGIS_LLM_BASE_URL

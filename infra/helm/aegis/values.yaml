@@ -34,7 +34,7 @@ composer:
   imagePullPolicy: IfNotPresent
   kafkaBootstrapServers: "aegis-kafka.aegis-system.svc.cluster.local:9092"
   groupId: "aegis-postmortem-composer"
-  inputTopic: "aegis.diagnostics.collected"
+  inputTopic: "aegis.postmortem.requested"
   outputTopic: "aegis.postmortem.generated"
   llmBaseUrl: "http://aegis-llm.aegis-system.svc.cluster.local:11434/v1"
   llmModel: "llama3.2:1b"

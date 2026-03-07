@@ -98,15 +98,6 @@ async def run_grpc_stream(
                     elif response.directive_type == "accepted":
                         logger.info(f"Telemetry accepted by Control Plane owner at {target}")
                         discovery.accept(target)
-                    elif response.directive_type == "backoff" or response.directive_type == "":
-                        delay = discovery.owner_failed()
-                        logger.warning(
-                            f"Control plane instructed backoff. Backing off for {delay:.2f}s"
-                        )
-                        await asyncio.sleep(delay)
-                        call.cancel()
-                        break
-                        
         except grpc.aio.AioRpcError as e:
             delay = discovery.owner_failed()
             logger.warning(

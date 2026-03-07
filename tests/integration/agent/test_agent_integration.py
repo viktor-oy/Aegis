@@ -43,7 +43,11 @@ class MockControlPlane(aegis_pb2_grpc.ControlPlaneTelemetryServicer):
             async for request in request_iterator:
                 self.received_samples.append(request)
                 if self.responses:
-                    yield self.responses.popleft()
+                    resp = self.responses.popleft()
+                    if isinstance(resp, Exception):
+                        await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "exhausted")
+                    else:
+                        yield resp
                 else:
                     # Default behavior if no queued responses
                     yield aegis_pb2.ControlPlaneDirective(directive_type="accepted")
@@ -152,10 +156,8 @@ async def test_grpc_stream_redirect(cp_server_factory, agent_setup):
 async def test_grpc_stream_backoff_directive(cp_server_factory, agent_setup):
     servicer, target = await cp_server_factory()
     
-    # Send explicit backoff directive
-    servicer.responses.append(aegis_pb2.ControlPlaneDirective(
-        directive_type="backoff"
-    ))
+    # Simulate CP ingest queue full
+    servicer.responses.append(Exception("resource exhausted"))
     
     agent_task, discovery = agent_setup(target)
     

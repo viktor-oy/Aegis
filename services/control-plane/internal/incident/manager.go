@@ -102,6 +102,9 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	if err := m.publish(ctx, TopicDiagnosticsCollected, "aegis.diagnostics.collected", inc, "", map[string]any{
 		"diagnostic_status": bundle.DiagnosticStatus,
 		"diagnostics":       bundle.Payload,
+		"reason":            result.Reason,
+		"failure_type":      string(result.FailureType),
+		"severity":          string(result.Severity),
 	}); err != nil {
 		return state.Incident{}, false, err
 	}
@@ -110,6 +113,10 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	if err := m.publish(ctx, TopicPostmortemRequested, "aegis.postmortem.requested", inc, "", map[string]any{
 		"diagnostic_status": bundle.DiagnosticStatus,
 		"postmortem_format": "default",
+		"diagnostics":       bundle.Payload,
+		"reason":            result.Reason,
+		"failure_type":      string(result.FailureType),
+		"severity":          string(result.Severity),
 	}); err != nil {
 		return state.Incident{}, false, err
 	}

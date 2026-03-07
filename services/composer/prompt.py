@@ -37,6 +37,8 @@ def build_prompt(
         f"{label_worker_id}: {worker_id}\n"
         f"Audience: {guidance.get('audience', 'infrastructure engineers')}\n"
         f"Severity context: {guidance.get('severity', payload.get('severity', 'unknown'))}\n"
+        f"Failure type: {payload.get('failure_type', 'unknown')}\n"
+        f"Trigger reason: {payload.get('reason', 'unknown')}\n"
         f"Extra guidance: {guidance.get('extra_prompt', 'none')}\n\n"
         "### STRICT GUIDANCE\n"
         "If the diagnostic data does not explicitly state the cause of the failure, DO NOT hallucinate one. "

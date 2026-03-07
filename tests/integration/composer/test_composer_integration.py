@@ -18,7 +18,7 @@ async def run_test() -> None:
     config = KafkaComposerConfig(
         bootstrap_servers="localhost:9094",
         group_id=f"test-group-{uuid4()}",
-        input_topic="aegis.diagnostics.collected",
+        input_topic="aegis.postmortem.requested",
         output_topic="aegis.postmortem.generated",
     )
     llm_client = OpenAICompatibleInferenceClient(
@@ -44,7 +44,9 @@ async def run_test() -> None:
             "incident_id": incident_id,
             "worker_id": "aegis-system--test-worker",
             "payload": {
-                "severity": "critical"
+                "severity": "critical",
+                "failure_type": "gpu_overheat",
+                "reason": "Temperature reached 90C which exceeds the 85C threshold for 3 consecutive readings."
             }
         }
 
@@ -80,6 +82,7 @@ async def run_test() -> None:
             
             # Assert that the AI successfully integrated critical context from the prompt
             assert "critical" in output_event["payload"]["markdown"].lower()
+            assert "temperature" in output_event["payload"]["markdown"].lower()
             
             markdown_content = output_event["payload"]["markdown"]
             
@@ -105,5 +108,5 @@ async def run_test() -> None:
 
 @pytest.mark.integration
 def test_composer_kafka_workflow() -> None:
-    wipe_infra_state("kafka:aegis.diagnostics.collected,aegis.postmortem.generated")
+    wipe_infra_state("kafka:aegis.postmortem.requested,aegis.postmortem.generated")
     asyncio.run(run_test())
