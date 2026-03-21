@@ -32,6 +32,8 @@ async def run_test() -> None:
     app = KafkaComposerApp(config, service)
     
     task = asyncio.create_task(app.run())
+    # Sleep hack: give the Composer's Kafka consumer group time to negotiate and assign
+    # partitions. If we don't sleep, we might publish the event before it's fully listening.
     await asyncio.sleep(2)
     
     try:

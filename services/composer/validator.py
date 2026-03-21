@@ -16,7 +16,10 @@ def validate_postmortem(markdown: str, incident_id: str, worker_id: str) -> Vali
     if len(markdown.strip()) < 120:
         errors.append("postmortem is too short")
     for section in REQUIRED_SECTIONS:
-        if f"## {section}" not in markdown and f"# {section}" not in markdown:
+        if section == "Title":
+            if not markdown.lstrip().startswith("# "):
+                errors.append("missing required section: Title")
+        elif f"## {section}" not in markdown and f"# {section}" not in markdown:
             errors.append(f"missing required section: {section}")
     if incident_id not in markdown:
         errors.append("incident_id is not preserved")
