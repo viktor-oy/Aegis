@@ -1,9 +1,9 @@
 SHELL := /bin/sh
 
-.PHONY: help lint test test-python test-go kind-up tilt-up proto docs-check
+.PHONY: help lint test test-python test-go test-integration test-e2e test-chaos kind-up tilt-up proto docs-check
 
 help:
-	@printf '%s\n' "Aegis targets: lint test test-python test-go kind-up tilt-up proto docs-check"
+	@printf '%s\n' "Aegis targets: lint test test-python test-go test-integration test-e2e test-chaos kind-up tilt-up proto docs-check"
 
 lint:
 	ruff check services tests
@@ -18,6 +18,15 @@ test-python:
 test-go:
 	go test ./...
 
+test-integration:
+	PYTHONPATH=services/agent:services/composer python3 -m unittest discover -s tests/integration -p 'test_*.py'
+
+test-e2e:
+	PYTHONPATH=services/agent:services/composer python3 -m unittest discover -s tests/e2e -p 'test_*.py'
+
+test-chaos:
+	PYTHONPATH=services/agent:services/composer python3 -m unittest discover -s tests/chaos -p 'test_*.py'
+
 kind-up:
 	kind create cluster --name aegis --image kindest/node:v1.34.8
 
@@ -29,4 +38,3 @@ proto:
 
 docs-check:
 	python3 scripts/check_topics.py
-
