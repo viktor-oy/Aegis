@@ -7,7 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/aegis/aegis/services/sink/internal/delivery"
+	"github.com/aegis/aegis/services/sink/internal/types"
+
 	"github.com/segmentio/kafka-go"
 )
 
@@ -19,12 +20,12 @@ type Publisher struct {
 func NewPublisher(brokers []string, logger *slog.Logger) *Publisher {
 	w := &kafka.Writer{
 		Addr:                   kafka.TCP(brokers...),
-		AllowAutoTopicCreation: true,
+		AllowAutoTopicCreation: false,
 	}
 	return &Publisher{writer: w, logger: logger}
 }
 
-func (p *Publisher) PublishStatus(ctx context.Context, topic string, result delivery.Result) error {
+func (p *Publisher) PublishStatus(ctx context.Context, topic string, result types.Result) error {
 	b, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("failed to marshal result: %w", err)

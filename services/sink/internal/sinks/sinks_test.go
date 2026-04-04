@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/aegis/aegis/services/sink/internal/delivery"
+	"github.com/aegis/aegis/services/sink/internal/types"
 )
 
 func TestFileSink_Deliver(t *testing.T) {
@@ -20,7 +20,7 @@ func TestFileSink_Deliver(t *testing.T) {
 		Directory: tempDir,
 	}
 
-	pm := delivery.Postmortem{
+	pm := types.Postmortem{
 		IncidentID: "test-incident",
 		Markdown:   "# Test\nSuccess",
 	}

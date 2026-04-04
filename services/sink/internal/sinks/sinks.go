@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/aegis/aegis/services/sink/internal/delivery"
+	"github.com/aegis/aegis/services/sink/internal/types"
 )
 
 type FileSink struct {
@@ -23,7 +23,7 @@ type FileSink struct {
 
 func (s *FileSink) Name() string { return "file" }
 
-func (s *FileSink) Deliver(_ context.Context, postmortem delivery.Postmortem) (string, error) {
+func (s *FileSink) Deliver(_ context.Context, postmortem types.Postmortem) (string, error) {
 	if s.Directory == "" {
 		return "", errors.New("file sink directory is not configured")
 	}
@@ -78,7 +78,7 @@ func (s *EmailSink) Validate() error {
 	return nil
 }
 
-func (s *EmailSink) Deliver(_ context.Context, postmortem delivery.Postmortem) (string, error) {
+func (s *EmailSink) Deliver(_ context.Context, postmortem types.Postmortem) (string, error) {
 	if err := s.Validate(); err != nil {
 		return "", err
 	}

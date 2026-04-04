@@ -4,28 +4,30 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/aegis/aegis/services/sink/internal/types"
 )
 
 type mockSink struct {
 	name        string
-	deliverFunc func(ctx context.Context, postmortem Postmortem) (string, error)
+	deliverFunc func(ctx context.Context, postmortem types.Postmortem) (string, error)
 }
 
 func (m *mockSink) Name() string { return m.name }
-func (m *mockSink) Deliver(ctx context.Context, postmortem Postmortem) (string, error) {
+func (m *mockSink) Deliver(ctx context.Context, postmortem types.Postmortem) (string, error) {
 	return m.deliverFunc(ctx, postmortem)
 }
 
 func TestWorker_Deliver(t *testing.T) {
 	sink1 := &mockSink{
 		name: "sink1",
-		deliverFunc: func(ctx context.Context, postmortem Postmortem) (string, error) {
+		deliverFunc: func(ctx context.Context, postmortem types.Postmortem) (string, error) {
 			return "ref1", nil
 		},
 	}
 	sink2 := &mockSink{
 		name: "sink2",
-		deliverFunc: func(ctx context.Context, postmortem Postmortem) (string, error) {
+		deliverFunc: func(ctx context.Context, postmortem types.Postmortem) (string, error) {
 			return "", errors.New("fail")
 		},
 	}
@@ -33,7 +35,7 @@ func TestWorker_Deliver(t *testing.T) {
 	pub := &MemoryStatusPublisher{}
 	worker := NewWorker([]Sink{sink1, sink2}, pub, 2)
 
-	pm := Postmortem{
+	pm := types.Postmortem{
 		IncidentID: "test-incident",
 		WorkerID:   "aegis-system--test-worker",
 	}

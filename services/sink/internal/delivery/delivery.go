@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"github.com/aegis/aegis/services/sink/internal/types"
 	"context"
 	"errors"
 	"fmt"
@@ -15,34 +16,15 @@ const (
 	TopicDLQ       = "aegis.postmortem.delivery.dlq"
 )
 
-type Postmortem struct {
-	IncidentID    string
-	WorkerID      string
-	Markdown      string
-	Severity      string
-	GeneratedAt   time.Time
-	CorrelationID string
-	Metadata      map[string]string
-}
 
-type Result struct {
-	IncidentID    string
-	Sink          string
-	Status        string
-	Attempts      int
-	Error         string
-	ArchiveRef    string
-	CorrelationID string
-	CompletedAt   time.Time
-}
 
 type Sink interface {
 	Name() string
-	Deliver(ctx context.Context, postmortem Postmortem) (string, error)
+	Deliver(ctx context.Context, postmortem types.Postmortem) (string, error)
 }
 
 type StatusPublisher interface {
-	PublishStatus(ctx context.Context, topic string, result Result) error
+	PublishStatus(ctx context.Context, topic string, result types.Result) error
 }
 
 type Worker struct {
@@ -65,14 +47,14 @@ func NewWorker(sinks []Sink, publisher StatusPublisher, maxAttempts int) *Worker
 	}
 }
 
-func (w *Worker) Deliver(ctx context.Context, postmortem Postmortem) ([]Result, error) {
+func (w *Worker) Deliver(ctx context.Context, postmortem types.Postmortem) ([]types.Result, error) {
 	if postmortem.IncidentID == "" || postmortem.WorkerID == "" {
 		return nil, errors.New("postmortem requires incident_id and worker_id")
 	}
 	w.mu.Lock()
 	if w.seen[postmortem.IncidentID] {
 		w.mu.Unlock()
-		return []Result{{
+		return []types.Result{{
 			IncidentID:    postmortem.IncidentID,
 			Status:        "duplicate_skipped",
 			CorrelationID: postmortem.CorrelationID,
@@ -82,7 +64,7 @@ func (w *Worker) Deliver(ctx context.Context, postmortem Postmortem) ([]Result, 
 	w.seen[postmortem.IncidentID] = true
 	w.mu.Unlock()
 
-	results := make([]Result, 0, len(w.sinks))
+	results := make([]types.Result, 0, len(w.sinks))
 	for _, sink := range w.sinks {
 		result := w.deliverOne(ctx, sink, postmortem)
 		results = append(results, result)
@@ -97,8 +79,8 @@ func (w *Worker) Deliver(ctx context.Context, postmortem Postmortem) ([]Result, 
 	return results, nil
 }
 
-func (w *Worker) deliverOne(ctx context.Context, sink Sink, postmortem Postmortem) Result {
-	result := Result{
+func (w *Worker) deliverOne(ctx context.Context, sink Sink, postmortem types.Postmortem) types.Result {
+	result := types.Result{
 		IncidentID:    postmortem.IncidentID,
 		Sink:          sink.Name(),
 		CorrelationID: postmortem.CorrelationID,
@@ -127,10 +109,10 @@ type MemoryStatusPublisher struct {
 
 type PublishedStatus struct {
 	Topic  string
-	Result Result
+	Result types.Result
 }
 
-func (p *MemoryStatusPublisher) PublishStatus(_ context.Context, topic string, result Result) error {
+func (p *MemoryStatusPublisher) PublishStatus(_ context.Context, topic string, result types.Result) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Records = append(p.Records, PublishedStatus{Topic: topic, Result: result})

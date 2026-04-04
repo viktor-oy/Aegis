@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/aegis/aegis/services/sink/internal/types"
+
 	"github.com/aegis/aegis/services/sink/internal/delivery"
 	aegiskafka "github.com/aegis/aegis/services/sink/internal/kafka"
 	"github.com/aegis/aegis/services/sink/internal/sinks"
@@ -130,17 +132,6 @@ func main() {
 	logger.Info("Received signal, shutting down", "signal", sig)
 }
 
-// Envelope represents the common event structure in Kafka
-type Envelope struct {
-	EventID       string              `json:"event_id"`
-	EventType     string              `json:"event_type"`
-	IncidentID    string              `json:"incident_id"`
-	WorkerID      string              `json:"worker_id"`
-	CorrelationID string              `json:"correlation_id"`
-	Timestamp     string              `json:"timestamp"`
-	Payload       delivery.Postmortem `json:"payload"`
-}
-
 func consumeKafka(ctx context.Context, logger *slog.Logger, reader *kafka.Reader, worker *delivery.Worker) {
 	logger.Info("Started consuming from Kafka", "topic", delivery.TopicGenerated)
 
@@ -154,7 +145,7 @@ func consumeKafka(ctx context.Context, logger *slog.Logger, reader *kafka.Reader
 			continue
 		}
 
-		var envelope Envelope
+		var envelope types.Envelope
 		if err := json.Unmarshal(m.Value, &envelope); err != nil {
 			logger.Error("Failed to unmarshal kafka message envelope", "error", err, "message", string(m.Value))
 			continue
@@ -206,7 +197,7 @@ func startHTTPServer(logger *slog.Logger, worker *delivery.Worker) {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		var pm delivery.Postmortem
+		var pm types.Postmortem
 		if err := json.NewDecoder(r.Body).Decode(&pm); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -220,8 +211,13 @@ func startHTTPServer(logger *slog.Logger, worker *delivery.Worker) {
 		json.NewEncoder(w).Encode(results)
 	})
 
-	logger.Info("Starting debug HTTP server on :8081")
-	if err := http.ListenAndServe(":8081", mux); err != nil {
+	port := os.Getenv("AEGIS_HTTP_PORT")
+	if port == "" {
+		port = "8081"
+	}
+
+	logger.Info("Starting debug HTTP server on :" + port)
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		logger.Error("HTTP server error", "error", err)
 	}
 }
