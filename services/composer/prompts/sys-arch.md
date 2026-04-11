@@ -8,4 +8,4 @@ Aegis is an out-of-path control plane for GPU/AI infrastructure that detects wor
 4. **Data Infrastructure**: 
    - **Kafka**: Async backbone for postmortem delivery.
    - **Redis**: Coordinates distributed locks and ephemeral leases.
-   - **PostgreSQL / MinIO / Slack**: Final sinks for generated postmortems (never accessed by the Control Plane directly).
+   - **File / Email**: Final sinks for generated postmortems (never accessed by the Control Plane directly).
