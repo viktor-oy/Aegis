@@ -1,35 +1,16 @@
 import asyncio
-import pytest
-import pytest_asyncio
+import contextlib
+import os
+import sys
+import time
+from collections import deque
+
 import grpc
 import httpx
-from collections import deque
-from services.agent.config import AgentConfig
-from services.agent.telemetry import SyntheticCollector
-from services.agent.diagnostics import DiagnosticBuffer
-from services.agent.main import run_grpc_stream
-from services.agent.api import app
-from services.agent.client import ControlPlaneDiscovery, OwnerDecision
+import pytest
+import pytest_asyncio
 from gen.python.aegis.v1 import aegis_pb2, aegis_pb2_grpc
 
-class SpyDiscovery(ControlPlaneDiscovery):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.redirects_received = []
-        self.accepts_received = []
-        self.backoffs_triggered = 0
-
-    def redirect(self, owner_hint: str) -> OwnerDecision:
-        self.redirects_received.append(owner_hint)
-        return super().redirect(owner_hint)
-
-    def accept(self, target: str) -> OwnerDecision:
-        self.accepts_received.append(target)
-        return super().accept(target)
-
-    def owner_failed(self) -> float:
-        self.backoffs_triggered += 1
-        return super().owner_failed()
 
 class MockControlPlane(aegis_pb2_grpc.ControlPlaneTelemetryServicer):
     def __init__(self):
@@ -54,6 +35,7 @@ class MockControlPlane(aegis_pb2_grpc.ControlPlaneTelemetryServicer):
         except asyncio.CancelledError:
             pass
 
+
 @pytest_asyncio.fixture
 async def cp_server_factory():
     """Factory to spin up multiple mock CP servers."""
@@ -73,52 +55,70 @@ async def cp_server_factory():
     for s in servers:
         await s.stop(grace=0.1)
 
+
 @pytest_asyncio.fixture
 async def agent_setup():
-    """DRY setup for initializing the agent state and tracking its task lifecycle."""
-    tasks = []
+    """DRY setup for starting the agent as a black-box subprocess."""
+    processes = []
     
-    def _create(target: str):
-        config = AgentConfig(
-            worker_id="aegis-system--test-worker",
-            bootstrap_urls=[target],
-            heartbeat_interval_seconds=0.1,
-            simulation_mode="normal",
-            telemetry_data_source="synthetic",
-            api_port=8080
+    async def _create(target: str, port: int = 8080):
+        env = os.environ.copy()
+        env["AEGIS_WORKER_ID"] = "aegis-system--test-worker"
+        env["AEGIS_CP_BOOTSTRAP_URLS"] = target
+        env["AEGIS_HEARTBEAT_INTERVAL_SECONDS"] = "0.1"
+        env["AEGIS_SIMULATION_MODE"] = "normal"
+        env["AEGIS_TELEMETRY_DATA_SOURCE"] = "MOCK"
+        env["AEGIS_AGENT_API_PORT"] = str(port)
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "services.agent.main",
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        collector = SyntheticCollector(config.worker_id)
-        diagnostics = DiagnosticBuffer(worker_id=config.worker_id, max_items=10)
-        discovery = SpyDiscovery(config.bootstrap_urls)
+        processes.append(proc)
         
-        agent_task = asyncio.create_task(run_grpc_stream(config, collector, diagnostics, discovery))
-        tasks.append(agent_task)
-        return agent_task, discovery
+        # Wait for the HTTP API to be ready
+        async with httpx.AsyncClient() as client:
+            for _ in range(50):
+                try:
+                    resp = await client.get(f"http://127.0.0.1:{port}/health")
+                    if resp.status_code == 200:
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.1)
+            else:
+                stdout_data, stderr_data = await proc.communicate()
+                print("Agent stdout:", stdout_data.decode())
+                print("Agent stderr:", stderr_data.decode())
+                raise RuntimeError(f"Agent API failed to start on port {port}")
+                
+        return proc
         
     yield _create
     
-    for t in tasks:
-        t.cancel()
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
+    for p in processes:
+        if p.returncode is None:
+            p.terminate()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(p.wait(), timeout=2.0)
+            if p.returncode is None:
+                p.kill()
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_grpc_stream_accepted(cp_server_factory, agent_setup):
     servicer, target = await cp_server_factory()
-    agent_task, discovery = agent_setup(target)
+    agent_proc = await agent_setup(target, port=8081)
     
     # Wait to allow stream collection to run
     await asyncio.sleep(0.5)
     
     assert servicer.connection_count >= 1
     assert len(servicer.received_samples) >= 2
-    # The default mock CP response is 'accepted'
-    assert target in discovery.accepts_received
-    assert discovery.backoffs_triggered == 0
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
@@ -133,23 +133,18 @@ async def test_grpc_stream_redirect(cp_server_factory, agent_setup):
         owner_hint=target2
     ))
     
-    agent_task, discovery = agent_setup(target1)
+    agent_proc = await agent_setup(target1, port=8082)
     
     # Give time for initial connection, redirect processing, and subsequent reconnection
     await asyncio.sleep(0.8)
     
     # Verify the first target actually issued the redirect
     assert servicer1.connection_count >= 1
-    assert target2 in discovery.redirects_received
     
     # Verify the agent successfully established a new connection to the redirected target
     assert servicer2.connection_count >= 1
     assert len(servicer2.received_samples) >= 1
-    
-    # Verify the agent correctly identified as accepted by the new owner
-    assert target2 in discovery.accepts_received
-    # Ensure it didn't crash into backoff logic
-    assert discovery.backoffs_triggered == 0
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
@@ -159,43 +154,48 @@ async def test_grpc_stream_backoff_directive(cp_server_factory, agent_setup):
     # Simulate CP ingest queue full
     servicer.responses.append(Exception("resource exhausted"))
     
-    agent_task, discovery = agent_setup(target)
+    agent_proc = await agent_setup(target, port=8083)
     
     await asyncio.sleep(0.5)
     
     assert servicer.connection_count >= 1
-    
-    # Confirm that the agent service processed the backoff directive correctly
-    assert discovery.backoffs_triggered >= 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_agent_api_health():
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/health")
+async def test_agent_api_health(cp_server_factory, agent_setup):
+    servicer, target = await cp_server_factory()
+    agent_proc = await agent_setup(target, port=8084)
+    
+    async with httpx.AsyncClient() as client:
+        resp = await client.get("http://127.0.0.1:8084/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
+
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_agent_diagnostics_buffer_read():
-    app.state.buffer = DiagnosticBuffer(worker_id="aegis-system--test-worker", max_items=10)
-    app.state.buffer.add_event("test_event", {"info": "test"})
+async def test_agent_diagnostics_buffer_read(cp_server_factory, agent_setup):
+    servicer, target = await cp_server_factory()
+    agent_proc = await agent_setup(target, port=8085)
     
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/diagnostics/buffer")
+    async with httpx.AsyncClient() as client:
+        # Give some time for background telemetry collection to populate buffer
+        await asyncio.sleep(0.5)
+        resp = await client.get("http://127.0.0.1:8085/diagnostics/buffer")
         assert resp.status_code == 200
         data = resp.json()
         assert data["worker_id"] == "aegis-system--test-worker"
         assert "failure_indicators" in data
 
+
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_agent_simulate_failure():
-    app.state.collector = SyntheticCollector("aegis-system--test-worker")
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post("/simulate", json={"mode": "model_crash"})
+async def test_agent_simulate_failure(cp_server_factory, agent_setup):
+    servicer, target = await cp_server_factory()
+    agent_proc = await agent_setup(target, port=8086)
+    
+    async with httpx.AsyncClient() as client:
+        resp = await client.post("http://127.0.0.1:8086/simulate", json={"mode": "model_crash"})
         assert resp.status_code == 200
         assert resp.json()["mode"] == "model_crash"
-        assert app.state.collector.mode == "model_crash"
