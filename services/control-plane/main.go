@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 )
 
 type localDiagnostics struct{}
@@ -121,6 +122,9 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	aegisv1.RegisterControlPlaneTelemetryServer(grpcServer, server.NewGRPCServer(cp))
+	if os.Getenv("AEGIS_DEBUG") == "true" {
+		reflection.Register(grpcServer)
+	}
 
 	// gRPC health service for Kubernetes probes (k8s 1.24+ supports native gRPC health checks).
 	// TODO: impl fallback for older k8s or other envs(e.g. docker compose)
