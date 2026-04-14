@@ -89,7 +89,7 @@ def main():
     
     print("\033[36mWaiting for infrastructure to be ready...\033[0m", flush=True)
     ready = False
-    for i in range(300):
+    for _ in range(300):
         if check_ready():
             ready = True
             break
@@ -102,7 +102,7 @@ def main():
         
     print("\033[36mInfrastructure is ready!\033[0m", flush=True)
     print("\033[36mRunning make init-kafka...\033[0m", flush=True)
-    env["KUBE_CONTEXT"] = "kind-aegis-intg-test"
+    env["AEGIS_KUBE_CONTEXT"] = "kind-aegis-intg-test"
     subprocess.run(["make", "init-kafka"], env=env)
     return 0
 

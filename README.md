@@ -50,6 +50,14 @@ make dev-up-0-lite     # Fast clean slate: forcefully wipes K8s namespaces witho
 
 Tilt applies the Helm/Kustomize artifacts. We use live update rules so your Python tweaks sync instantly without full image rebuilds, Go changes only recompile the affected binary, and stateful infra doesn't constantly reboot on app edits. `Tiltfile.infra` handles the heavy backing services (Kafka, Redis) and can be spun up independently for integration testing.
 
+> [!TIP]
+> **Configuring the Local LLM Model (Ollama)**
+> By default, `Tiltfile.infra` bakes `qwen2.5:0.5b` into a Docker layer for fast startup—a compact (~400 MB) sub-1B model that reliably generates structured Markdown postmortems without failing formatting validation. You can customize the model to any Ollama or Qwen model between 0.5B and 2B parameters (e.g., `qwen2.5:1.5b`, `llama3.2:1b`, `gemma2:2b`). While you can override the model at runtime using the `OLLAMA_MODEL` environment variable (e.g., `OLLAMA_MODEL=llama3.2:1b make dev-up`), manually updating the `OLLAMA_MODEL` default build argument in `Tiltfile.infra` (or `infra/docker/llm/Dockerfile`) is recommended if you work with a different model regularly. Doing so caches the model directly into a Docker image layer during build, making iterative development and pod restarts significantly faster without runtime pull overhead.
+>
+> [!IMPORTANT]
+> **Shared Infrastructure Impact**
+> Because `Tiltfile` includes `Tiltfile.infra`, manually changing the default `OLLAMA_MODEL` parameter in `Tiltfile.infra` will affect both direct Aegis development runs (`make dev-up`) and full integration test suites (`make test-intg`). Ensure any selected model consistently passes both postmortem Markdown validation and integration tests.
+
 ## Services
 
 - `aegis-control-plane`: The Go brains. Handles ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication. Configured via `AEGIS_CP_ADDRESS`, `AEGIS_GRPC_ADDRESS`, `AEGIS_REDIS_ADDR` and `AEGIS_KAFKA_BROKERS`. It fully supports multicore telemetry consumption.

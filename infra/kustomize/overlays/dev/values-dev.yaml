@@ -7,7 +7,7 @@ composer:
   image: "aegis-composer:latest"
   imagePullPolicy: Never
   llmBaseUrl: "http://aegis-llm.aegis-system.svc.cluster.local:11434/v1"
-  llmModel: "llama3.2:1b"
+  llmModel: "qwen2.5:0.5b"
 
 controlPlane:
   image: "aegis-control-plane:latest"

@@ -6,7 +6,7 @@
 
 set -e
 
-MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+MODEL="${OLLAMA_MODEL:-qwen2.5:0.5b}"
 
 echo "[aegis-llm] Starting Ollama server (model: ${MODEL})"
 

@@ -8,8 +8,8 @@ import re
 def log_info(msg):
     print(f"\033[36m{msg}\033[0m", flush=True)
 
-KUBE_CONTEXT = os.environ.get("AEGIS_KUBE_CONTEXT")
-if not KUBE_CONTEXT:
+AEGIS_KUBE_CONTEXT = os.environ.get("AEGIS_KUBE_CONTEXT")
+if not AEGIS_KUBE_CONTEXT:
     raise ValueError(
         "AEGIS_KUBE_CONTEXT environment variable must be specified. "
         "This script requires explicit context to avoid accidentally wiping the wrong cluster "
@@ -19,7 +19,7 @@ if not KUBE_CONTEXT:
 def wipe_redis():
     log_info("🧹 Wiping Redis State...")
     subprocess.run(
-        ["kubectl", "--context", KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-redis-master-0", "--", "redis-cli", "FLUSHALL"],
+        ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-redis-master-0", "--", "redis-cli", "FLUSHALL"],
         stdout=subprocess.DEVNULL
     )
 
@@ -79,7 +79,7 @@ def wipe_kafka(target_topics=None):
     json_str = json.dumps(delete_json)
     try:
         subprocess.run(
-            ["kubectl", "--context", KUBE_CONTEXT, "exec", "-i", "-n", "aegis-system", "aegis-kafka-controller-0", "-c", "kafka", "--", 
+            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-i", "-n", "aegis-system", "aegis-kafka-controller-0", "-c", "kafka", "--", 
              "/opt/bitnami/kafka/bin/kafka-delete-records.sh", "--bootstrap-server", "localhost:9092", "--offset-json-file", "/dev/stdin"],
             input=json_str.encode('utf-8'),
             stdout=subprocess.DEVNULL,

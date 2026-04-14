@@ -32,7 +32,7 @@ composer:
   imagePullPolicy: IfNotPresent
   kafkaBootstrapServers: "aegis-kafka:9092"
   llmBaseUrl: "http://aegis-llm.aegis-system.svc.cluster.local:11434/v1"
-  llmModel: "llama3.2:1b"
+  llmModel: "qwen2.5:0.5b"
   postmortem:
     labels:
       workerId: "Worker ID [{{ .Release.Namespace }}]"
@@ -141,7 +141,7 @@ llm:
   enabled: false
   image: "aegis-llm:latest"
   imagePullPolicy: IfNotPresent
-  model: "llama3.2:1b"
+  model: "qwen2.5:0.5b"
   resources:
     requests:
       cpu: "1"

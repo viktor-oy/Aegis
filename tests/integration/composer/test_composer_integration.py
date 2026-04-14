@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import httpx
 from uuid import uuid4
 import pytest
@@ -24,7 +25,7 @@ async def run_test() -> None:
     llm_client = OpenAICompatibleInferenceClient(
         InferenceConfig(
             base_url="http://localhost:11434",
-            model="llama3.2:1b",
+            model=os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b"),
             timeout_seconds=240.0
         )
     )
@@ -89,7 +90,6 @@ async def run_test() -> None:
             markdown_content = output_event["payload"]["markdown"]
             
             # Write markdown artifact to disk
-            import os
             from pathlib import Path
             artifact_dir = Path("docs/services/composer/local/artifacts")
             artifact_dir.mkdir(parents=True, exist_ok=True)

@@ -7,9 +7,11 @@ else:
     # Use default context or whatever is active
     pass
 
-# Build the AI Server — model is parameterized via OLLAMA_MODEL build arg (default: llama3.2:1b)
+# Build the AI Server — model is parameterized via OLLAMA_MODEL env var / build arg (default: qwen2.5:0.5b).
+# Can be overridden via environment variable (e.g. `OLLAMA_MODEL=llama3.2:1b tilt up`) or by manually editing this file.
 # On Apple Silicon, Ollama automatically uses Metal GPU acceleration.
-docker_build('aegis-llm', 'infra/docker/llm', build_args={'OLLAMA_MODEL': 'llama3.2:1b'})
+ollama_model = os.getenv('OLLAMA_MODEL', 'qwen2.5:0.5b')
+docker_build('aegis-llm', 'infra/docker/llm', build_args={'OLLAMA_MODEL': ollama_model})
 
 # Run helm dependency update only when Chart.yaml changes (covers fresh setup and version bumps
 # without blocking every Tiltfile reload on a slow network round-trip).
@@ -62,6 +64,7 @@ if aegis_env == 'intg-test':
 local_resource(
     'init-kafka',
     cmd='make init-kafka',
+    env={'AEGIS_KUBE_CONTEXT': 'kind-aegis-intg-test' if aegis_env == 'intg-test' else 'kind-aegis'},
     resource_deps=['aegis-kafka-controller'],
     labels=['infra'],
 )

@@ -75,8 +75,8 @@ tilt-test-infra-up: clear-test-ports
 	AEGIS_ENV=intg-test tilt up --port 10352 --context kind-aegis-intg-test -f Tiltfile.infra
 
 init-kafka:
-	kubectl --context $(AEGIS_KUBE_CONTEXT) wait --for=condition=ready pod -l app.kubernetes.io/name=kafka -n aegis-system --timeout=300s
-	topicctl apply infra/kafka/topics.yaml --cluster-config infra/kafka/cluster.yaml --skip-confirm
+	kubectl $(if $(AEGIS_KUBE_CONTEXT),--context $(AEGIS_KUBE_CONTEXT)) wait --for=condition=ready pod -l app.kubernetes.io/name=kafka -n aegis-system --timeout=300s
+	mise exec -- topicctl apply infra/kafka/topics.yaml --cluster-config infra/kafka/cluster.yaml --skip-confirm
 
 wipe-infra-state:
 	@./scripts/wipe_infra_state.py $(TARGETS)
