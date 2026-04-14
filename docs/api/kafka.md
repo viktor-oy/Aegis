@@ -149,31 +149,31 @@ postmortem.
 **Published by**: Python Composer  
 **Partitions**: 12 | **Retention**: 14 days
 
-Dispatches delivery work to Go Sink Workers for Slack, PostgreSQL, and S3/MinIO.
+Dispatches delivery work to Go Sink Workers for Slack, File, and Email.
 
-**Payload**:
+**Payload:**
+
 ```json
 {
-  "targets": ["slack", "postgresql", "s3"],
-  "postmortem_markdown": "<full Markdown string>"
+  "postmortem": "# Incident...",
+  "targets": ["file", "email"],
+  "format": "markdown"
 }
 ```
 
 ---
 
-### aegis.postmortem.delivery.status
+### 7. aegis.postmortem.delivery.status
 
-**Published by**: Go Sink Workers  
-**Partitions**: 12 | **Retention**: 14 days
+Emitted by Sink Workers when a delivery attempt succeeds or fails.
 
-Reports delivery outcome per target.
+**Payload:**
 
-**Payload**:
 ```json
 {
-  "target":       "slack | postgresql | s3",
-  "status":       "delivered | failed",
-  "reference":    "<Slack message URL | PostgreSQL row ID | S3 object key>",
+  "target":       "file | email",
+  "status":       "SUCCESS | RETRY | DLQ",
+  "reference":    "<File path | Email ID>",
   "error":        "<error string or null>"
 }
 ```

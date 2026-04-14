@@ -21,3 +21,6 @@ reports/chaos/*
 *.log
 
 docs/services/*/local
+
+# Ignore downloaded Helm chart dependencies
+infra/helm/*/charts/*.tgz

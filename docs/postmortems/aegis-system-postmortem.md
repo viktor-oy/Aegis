@@ -6,11 +6,11 @@ Aegis was built to detect GPU/AI worker failure signals, coordinate diagnostics,
 
 ## Architecture
 
-Python Agents stream telemetry to Go Control Plane replicas. CP replicas use Redis leases to build an in-memory hash ring, acquire Redis incident locks, and publish diagnostic events to Kafka. The Python Composer calls a black-box OpenAI-compatible endpoint and publishes Markdown postmortems. Go Sink Workers fan out to Slack, PostgreSQL, and S3-compatible storage.
+Python Agents stream telemetry to Go Control Plane replicas. CP replicas use Redis leases to build an in-memory hash ring, acquire Redis incident locks, and publish diagnostic events to Kafka. The Python Composer calls a black-box OpenAI-compatible endpoint and publishes Markdown postmortems. Go Sink Workers fan out to File paths and Email.
 
-## Experiment Setup
+### Environment
 
-The validation setup uses local Kubernetes with pinned infrastructure versions, configurable GPU or mock telemetry, mock Slack, an OpenAI-compatible inference endpoint, Redis, Kafka, PostgreSQL, MinIO, and OpenTelemetry Collector.
+The validation setup uses local Kubernetes with pinned infrastructure versions, configurable GPU or mock telemetry, an OpenAI-compatible inference endpoint, Redis, Kafka, and Mailpit.
 
 ## Failures and Bottlenecks
 
@@ -36,7 +36,7 @@ AI failures should not affect CP detection. Composer validation rejects malforme
 
 ## Sink Failure Behavior
 
-Sink Workers retry delivery, publish status, and move permanent failures to DLQ. PostgreSQL and S3 writes are keyed by deterministic `incident_id` for idempotency.
+Sink Workers retry delivery, publish status, and move permanent failures to DLQ. File writes are keyed by deterministic `incident_id` for idempotency.
 
 ## Tradeoffs
 

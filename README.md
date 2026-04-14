@@ -178,7 +178,66 @@ To run tests individually while leveraging all our custom formatting and state c
 
 KEDA ScaledObjects look at CP queue depth and active agents for the Control Plane, Kafka lag for Composer and Sink Workers, and latency/concurrency signals for the optional local AI server. CPU and memory HPAs are kept around as fallback scalers.
 
-## Helm, Kustomize, and Terraform
+## Helm, Kustomize, and Deployment Environments
+
+Helm owns the reusable cloud chart under `infra/helm/aegis`. We employ a hybrid architecture where Kustomize orchestrates the rendering of the Helm chart for specific environments, located under `infra/kustomize/overlays/`.
+
+### Engineering Judgment on Production Defaults
+We maintain explicit Kustomize overlays and `values-<env>.yaml` files for `local`, `dev`, and `staging` environments. However, **we intentionally omit a default `values-prod.yaml` for production**. 
+This is a conscious security and engineering decision to ensure that default configurations (such as weak passwords, open NodePorts, or debug modes) are never accidentally pushed to production. An engineer or an automated CI/CD pipeline must explicitly provide a hardened production values file to successfully deploy to production.
+
+### Usage Guides
+
+The infrastructure deployment instructions are split into two categories:
+
+#### 1. Development Use Case
+
+For active development, contributing, and testing natively against the source repository, we use a combination of Terraform, Tilt, and Kustomize to orchestrate the Helm chart across environments.
+
+**Local Development (with Live Updates)**:
+We use a wrapper command that first provisions the local Kind cluster via Terraform and then attaches Tilt for live updates.
+```sh
+make dev-up
+```
+
+*Note: If you wish to manage the cluster without Terraform, you can use the manual fallbacks `make kind-up-manual` and `make tilt-up-manual`.*
+
+**Manual Local Deployment**:
+```sh
+kustomize build --enable-helm infra/kustomize/overlays/local | kubectl apply -f -
+```
+**Development & Staging Environments**:
+```sh
+kustomize build --enable-helm infra/kustomize/overlays/dev | kubectl apply -f -
+# OR
+kustomize build --enable-helm infra/kustomize/overlays/staging | kubectl apply -f -
+```
+**Production Kustomize Deployment**:
+Since there are no default production values, supply your own `values-prod.yaml` first:
+```sh
+cat <<EOF > infra/kustomize/overlays/prod/values-prod.yaml
+# Production overrides go here
+EOF
+kustomize build --enable-helm infra/kustomize/overlays/prod | kubectl apply -f -
+```
+
+#### 2. Deployment Use Case
+
+If you are a consumer deploying Aegis via the hosted Helm package store (e.g., assuming it is hosted at `https://charts.aegis.io`), use standard Helm commands:
+
+1. Add the Helm repository:
+```sh
+helm repo add aegis https://charts.aegis.io
+helm repo update
+```
+
+2. Create your hardened `values-prod.yaml` securely.
+
+3. Deploy the chart to your cluster:
+```sh
+helm install aegis-production aegis/aegis --namespace aegis-system --create-namespace -f values-prod.yaml
+```
+
 
 Helm owns the reusable cloud chart under `infra/helm/aegis`. Kustomize overlays under `infra/kustomize/overlays/local` and `infra/kustomize/overlays/cloud` inject small environmental differences. Terraform under `infra/terraform/local` is strictly optional and just provisions the foundation; Aegis expects to deploy into an existing cluster without relying on Terraform.
 

@@ -1,0 +1,29 @@
+kubectl get pods --namespace aegis-system
+
+kubectl delete statefulset aegis-kafka-controller -n aegis-system         
+
+kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system && \
+    kubectl delete pvc -l app.kubernetes.io/name=kafka -n aegis-system && \
+    kubectl delete pod --all -n aegis-system
+
+kubectl describe pods/aegis-kafka-controller-2 --namespace aegis-system
+
+kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system   
+
+kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system && \
+    kubectl delete pvc -l app.kubernetes.io/name=kafka -n aegis-system
+
+    kubectl logs -l app.kubernetes.io/name=kafka -n aegis-system --prefix=true -f
+
+    kubectl delete statefulset aegis-kafka-controller -n aegis-system && \
+kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system && \
+kubectl delete pvc -l app.kubernetes.io/name=kafka -n aegis-system
+
+topicctl get offsets aegis.postmortem.requested --cluster-config infra/kafka/cluster.yaml
+
+topicctl tail aegis.postmortem.requested --cluster-config infra/kafka/cluster.yaml --offset 0
+
+topicctl get lags aegis.diagnostics.collected test-group-15ed5e9e-f515-48a0-9515-b9f70b3febb2 --cluster-config infra/kafka/cluster.yaml
+
+colima stop      
+colima start --memory 12
