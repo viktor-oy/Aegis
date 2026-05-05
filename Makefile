@@ -56,7 +56,7 @@ test-control-plane-unit:
 
 test-control-plane-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- ./services/control-plane/internal/server/server_integration_test.go
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -p 1 -tags=integration -run ^TestIntegration_ ./services/control-plane/internal/server/... ./services/control-plane/internal/incident/...
 
 test-sink: test-sink-unit test-sink-intg
 
@@ -65,7 +65,7 @@ test-sink-unit:
 
 test-sink-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -tags=integration ./services/sink
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -tags=integration -run ^TestIntegration_ ./services/sink
 
 
 tilt-infra-up:

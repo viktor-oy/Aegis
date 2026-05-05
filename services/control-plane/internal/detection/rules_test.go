@@ -206,5 +206,3 @@ func sample(ts time.Time, temp float64, modelHealthy bool) state.TelemetrySample
 		ModelServerHealthy: modelHealthy,
 	}
 }
-
-

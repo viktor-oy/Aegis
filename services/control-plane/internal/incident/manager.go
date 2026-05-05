@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/aegis/aegis/services/control-plane/internal/kafka"
+	"github.com/aegis/aegis/services/control-plane/internal/membership"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
 )
 
@@ -16,12 +18,22 @@ const (
 	TopicDiagnosticsRequested  = "aegis.diagnostics.requested"
 	TopicDiagnosticsCollected  = "aegis.diagnostics.collected"
 	TopicPostmortemRequested   = "aegis.postmortem.requested"
+	TopicCorruptFSMDLQ         = "aegis.cp.corrupt-fsm.dlq"
 	defaultIncidentLockTTL     = 10 * time.Minute
 	defaultIncidentBucketWidth = time.Minute
 )
 
-type Locker interface {
+type Store interface {
 	AcquireIncidentLock(ctx context.Context, workerID string, incidentID string, ttl time.Duration, now time.Time) (bool, error)
+	ReleaseIncidentLock(ctx context.Context, workerID string, incidentID string) error
+	SetWorkerState(ctx context.Context, st membership.WorkerState) error
+	GetWorkerState(ctx context.Context, workerID string, errorType string) (*membership.WorkerState, error)
+	DeleteWorkerState(ctx context.Context, workerID string, errorType string) error
+	ListActiveWorkerStates(ctx context.Context) ([]membership.WorkerState, error)
+	SetDLQMarker(ctx context.Context, workerID string, errorType string, markerData string) error
+	GetDLQMarker(ctx context.Context, workerID string, errorType string) (string, error)
+	DeleteDLQMarker(ctx context.Context, workerID string, errorType string) error
+	ListDLQMarkers(ctx context.Context) ([]string, error)
 }
 
 type DiagnosticRequester interface {
@@ -29,7 +41,7 @@ type DiagnosticRequester interface {
 }
 
 type Manager struct {
-	locker      Locker
+	store       Store
 	publisher   kafka.Publisher
 	diagnostics DiagnosticRequester
 	producer    string
@@ -37,9 +49,9 @@ type Manager struct {
 	bucketWidth time.Duration
 }
 
-func NewManager(locker Locker, publisher kafka.Publisher, diagnostics DiagnosticRequester, producer string) *Manager {
+func NewManager(store Store, publisher kafka.Publisher, diagnostics DiagnosticRequester, producer string) *Manager {
 	return &Manager{
-		locker:      locker,
+		store:       store,
 		publisher:   publisher,
 		diagnostics: diagnostics,
 		producer:    producer,
@@ -49,11 +61,67 @@ func NewManager(locker Locker, publisher kafka.Publisher, diagnostics Diagnostic
 }
 
 func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionResult) (state.Incident, bool, error) {
-	incidentID := DeterministicID(result.WorkerID, result.FailureType, result.ObservedAt, m.bucketWidth)
-	locked, err := m.locker.AcquireIncidentLock(ctx, result.WorkerID, incidentID, m.lockTTL, result.ObservedAt)
+	// Pre-lock inspection
+	var incidentID, correlationID string
+	fromState := state.WorkerHealthy
+
+	// Check if there is an existing state for this error type
+	existingState, err := m.store.GetWorkerState(ctx, result.WorkerID, string(result.FailureType))
+	if err == nil && existingState != nil && existingState.IncidentID != "" && existingState.CurrentState != string(state.WorkerResolved) {
+		// Inherit FSM from previous CP that may be dead or lost the agent being handled due to hashring rebalance
+		incidentID = existingState.IncidentID
+		correlationID = existingState.CorrelationID
+		fromState = state.WorkerHealthState(existingState.CurrentState)
+	} else {
+		incidentID = DeterministicID(result.WorkerID, result.FailureType, result.ObservedAt, m.bucketWidth)
+		correlationID = result.CorrelationID
+	}
+
+	// Acquire short-lived mutex lock solely for consistent hash divergence mutual exclusion
+	locked, err := m.store.AcquireIncidentLock(ctx, result.WorkerID, incidentID, m.lockTTL, result.ObservedAt)
 	if err != nil || !locked {
 		return state.Incident{}, false, err
 	}
+	defer func() {
+		_ = m.store.ReleaseIncidentLock(ctx, result.WorkerID, incidentID)
+	}()
+
+	// Enforce FSM validator matrix before transitioning to WorkerSuspected
+	if !ValidTransition(fromState, state.WorkerSuspected) {
+		slog.Error("illegal FSM transition rejected",
+			"metric", "aegis_fsm_illegal_transitions_total",
+			"worker_id", result.WorkerID,
+			"error_type", string(result.FailureType),
+			"incident_id", incidentID,
+			"from_state", string(fromState),
+			"to_state", string(state.WorkerSuspected),
+			"correlation_id", correlationID,
+		)
+		errMsg := fmt.Sprintf("illegal FSM transition from %s to %s", fromState, state.WorkerSuspected)
+		_ = m.store.SetDLQMarker(ctx, result.WorkerID, string(result.FailureType), errMsg)
+		inc := state.Incident{
+			IncidentID:    incidentID,
+			WorkerID:      result.WorkerID,
+			FailureType:   result.FailureType,
+			State:         fromState,
+			Severity:      result.Severity,
+			DetectedAt:    result.ObservedAt.UTC(),
+			CorrelationID: correlationID,
+		}
+		_ = m.publish(ctx, TopicCorruptFSMDLQ, "aegis.cp.fsm_illegal_transition", inc, fmt.Sprintf("%s:%s", result.WorkerID, result.FailureType), map[string]any{
+			"from_state": string(fromState),
+			"to_state":   string(state.WorkerSuspected),
+			"error":      errMsg,
+			"metric":     "aegis_fsm_illegal_transitions_total",
+		})
+		return state.Incident{}, false, fmt.Errorf("illegal FSM transition from %s to %s for worker %s", fromState, state.WorkerSuspected, result.WorkerID)
+	}
+
+	reason := result.Reason
+	if result.FailureType == state.FailureMissedHeartbeat {
+		reason = "Node failure suspected due to missed heartbeat min-heap expiry"
+	}
+
 	inc := state.Incident{
 		IncidentID:    incidentID,
 		WorkerID:      result.WorkerID,
@@ -61,10 +129,19 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 		State:         state.WorkerSuspected,
 		Severity:      result.Severity,
 		DetectedAt:    result.ObservedAt.UTC(),
-		CorrelationID: result.CorrelationID,
+		CorrelationID: correlationID,
 	}
-	if err := m.publish(ctx, TopicIncidentDetected, "aegis.incident.detected", inc, "", map[string]any{
-		"reason":       result.Reason,
+	_ = m.store.SetWorkerState(ctx, membership.WorkerState{
+		WorkerID:      result.WorkerID,
+		ErrorType:     string(result.FailureType),
+		IncidentID:    inc.IncidentID,
+		CurrentState:  string(inc.State),
+		CorrelationID: inc.CorrelationID,
+		UpdatedAt:     time.Now().UTC(),
+	})
+
+	if err := m.publish(ctx, TopicIncidentDetected, "aegis.incident.detected", inc, fmt.Sprintf("%s:%s", result.WorkerID, result.FailureType), map[string]any{
+		"reason":       reason,
 		"failure_type": string(result.FailureType),
 		"severity":     string(result.Severity),
 	}); err != nil {
@@ -72,7 +149,15 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	}
 
 	inc.State = state.WorkerDiagnosticsTriggered
-	if err := m.publish(ctx, TopicDiagnosticsRequested, "aegis.diagnostics.requested", inc, "", map[string]any{
+	_ = m.store.SetWorkerState(ctx, membership.WorkerState{
+		WorkerID:      result.WorkerID,
+		ErrorType:     string(result.FailureType),
+		IncidentID:    inc.IncidentID,
+		CurrentState:  string(inc.State),
+		CorrelationID: inc.CorrelationID,
+		UpdatedAt:     time.Now().UTC(),
+	})
+	if err := m.publish(ctx, TopicDiagnosticsRequested, "aegis.diagnostics.requested", inc, fmt.Sprintf("%s:%s", result.WorkerID, result.FailureType), map[string]any{
 		"diagnostic_status": "requested",
 	}); err != nil {
 		return state.Incident{}, false, err
@@ -99,10 +184,18 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 		}
 	}
 	inc.State = state.WorkerDiagnosticsCollected
-	if err := m.publish(ctx, TopicDiagnosticsCollected, "aegis.diagnostics.collected", inc, "", map[string]any{
+	_ = m.store.SetWorkerState(ctx, membership.WorkerState{
+		WorkerID:      result.WorkerID,
+		ErrorType:     string(result.FailureType),
+		IncidentID:    inc.IncidentID,
+		CurrentState:  string(inc.State),
+		CorrelationID: inc.CorrelationID,
+		UpdatedAt:     time.Now().UTC(),
+	})
+	if err := m.publish(ctx, TopicDiagnosticsCollected, "aegis.diagnostics.collected", inc, fmt.Sprintf("%s:%s", result.WorkerID, result.FailureType), map[string]any{
 		"diagnostic_status": bundle.DiagnosticStatus,
 		"diagnostics":       bundle.Payload,
-		"reason":            result.Reason,
+		"reason":            reason,
 		"failure_type":      string(result.FailureType),
 		"severity":          string(result.Severity),
 	}); err != nil {
@@ -110,11 +203,19 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	}
 
 	inc.State = state.WorkerPostmortemRequested
-	if err := m.publish(ctx, TopicPostmortemRequested, "aegis.postmortem.requested", inc, "", map[string]any{
+	_ = m.store.SetWorkerState(ctx, membership.WorkerState{
+		WorkerID:      result.WorkerID,
+		ErrorType:     string(result.FailureType),
+		IncidentID:    inc.IncidentID,
+		CurrentState:  string(inc.State),
+		CorrelationID: inc.CorrelationID,
+		UpdatedAt:     time.Now().UTC(),
+	})
+	if err := m.publish(ctx, TopicPostmortemRequested, "aegis.postmortem.requested", inc, fmt.Sprintf("%s:%s", result.WorkerID, result.FailureType), map[string]any{
 		"diagnostic_status": bundle.DiagnosticStatus,
 		"postmortem_format": "default",
 		"diagnostics":       bundle.Payload,
-		"reason":            result.Reason,
+		"reason":            reason,
 		"failure_type":      string(result.FailureType),
 		"severity":          string(result.Severity),
 	}); err != nil {
@@ -156,4 +257,3 @@ func (m *Manager) publish(ctx context.Context, topic string, eventType string, i
 	env := kafka.NewEnvelope(eventType, inc, m.producer, causationID, payload, time.Now())
 	return m.publisher.Publish(ctx, topic, env)
 }
-

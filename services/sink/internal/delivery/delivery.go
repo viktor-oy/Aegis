@@ -1,10 +1,10 @@
 package delivery
 
 import (
-	"github.com/aegis/aegis/services/sink/internal/types"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/aegis/aegis/services/sink/internal/types"
 	"sync"
 	"time"
 )
@@ -15,8 +15,6 @@ const (
 	TopicRetry     = "aegis.postmortem.delivery.retry"
 	TopicDLQ       = "aegis.postmortem.delivery.dlq"
 )
-
-
 
 type Sink interface {
 	Name() string

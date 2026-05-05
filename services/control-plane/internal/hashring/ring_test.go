@@ -66,9 +66,9 @@ func TestRingDeduplicatesMembers(t *testing.T) {
 
 func TestRingSkipsInvalidMembers(t *testing.T) {
 	ring, err := New([]Member{
-		{ID: "", Address: "a:50051"},           // empty ID
-		{ID: "cp-a", Address: ""},              // empty address
-		{ID: "cp-valid", Address: "v:50051"},   // valid
+		{ID: "", Address: "a:50051"},         // empty ID
+		{ID: "cp-a", Address: ""},            // empty address
+		{ID: "cp-valid", Address: "v:50051"}, // valid
 	}, 64)
 	if err != nil {
 		t.Fatal(err)
@@ -97,4 +97,3 @@ func TestFingerprintDiffersForDifferentMembers(t *testing.T) {
 		t.Fatal("different members should produce different fingerprints")
 	}
 }
-

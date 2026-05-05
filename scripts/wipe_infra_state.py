@@ -18,10 +18,13 @@ if not AEGIS_KUBE_CONTEXT:
 
 def wipe_redis():
     log_info("🧹 Wiping Redis State...")
-    subprocess.run(
-        ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-redis-master-0", "--", "redis-cli", "FLUSHALL"],
-        stdout=subprocess.DEVNULL
-    )
+    try:
+        subprocess.run(
+            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-redis-master-0", "--", "redis-cli", "FLUSHALL"],
+            stdout=subprocess.DEVNULL
+        )
+    except FileNotFoundError:
+        print("kubectl not found, skipping redis wipe")
 
 def wipe_kafka(target_topics=None):
     if target_topics:
@@ -85,6 +88,8 @@ def wipe_kafka(target_topics=None):
             stdout=subprocess.DEVNULL,
             check=True
         )
+    except FileNotFoundError:
+        print("kubectl not found, skipping kafka wipe")
     except subprocess.CalledProcessError as e:
         print(f"Failed to delete Kafka records. The cluster state might not match topics.yaml.", file=sys.stderr)
         sys.exit(1)

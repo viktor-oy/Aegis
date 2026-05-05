@@ -8,17 +8,25 @@ import (
 	"strings"
 	"testing"
 )
-// WipeTestState wipes the specified infrastructure ("redis", "kafka", or "" for all).
-func WipeTestState(t *testing.T, targets string) {
-	t.Helper()
-	LogInfo(t, "🧹 Wiping test state (targets: %q)...", targets)
 
-	// Find project root by looking for Makefile
+var (
+	DefaultRedisAddr    = "localhost:6379"
+	DefaultKafkaBrokers = []string{"localhost:9094"}
+)
+
+// GetProjectRoot finds the root directory of the project by looking for the Makefile.
+func GetProjectRoot(t *testing.T) string {
+	if t != nil {
+		t.Helper()
+	}
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("Failed to get current directory: %v", err)
+		if t != nil {
+			t.Fatalf("Failed to get current directory: %v", err)
+		}
+		panic(fmt.Sprintf("Failed to get current directory: %v", err))
 	}
-	
+
 	rootDir := ""
 	for i := 0; i < 10; i++ {
 		if _, err := os.Stat(filepath.Join(dir, "Makefile")); err == nil {
@@ -28,8 +36,24 @@ func WipeTestState(t *testing.T, targets string) {
 		dir = filepath.Dir(dir)
 	}
 	if rootDir == "" {
-		t.Fatalf("Could not find project root (Makefile not found)")
+		if t != nil {
+			t.Fatalf("Could not find project root (Makefile not found)")
+		}
+		panic("Could not find project root (Makefile not found)")
 	}
+	return rootDir
+}
+
+// WipeTestState wipes the specified infrastructure ("redis", "kafka", or "" for all).
+func WipeTestState(t *testing.T, targets string) {
+	if t != nil {
+		t.Helper()
+		LogInfo(t, "🧹 Wiping test state (targets: %q)...", targets)
+	} else {
+		fmt.Printf("🧹 Wiping test state (targets: %q)...\n", targets)
+	}
+
+	rootDir := GetProjectRoot(t)
 
 	args := []string{"wipe-infra-state"}
 	if targets != "" {
@@ -49,7 +73,10 @@ func WipeTestState(t *testing.T, targets string) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to wipe test state: %v", err)
+		if t != nil {
+			t.Fatalf("Failed to wipe test state: %v", err)
+		}
+		panic(fmt.Sprintf("Failed to wipe test state: %v", err))
 	}
 }
 

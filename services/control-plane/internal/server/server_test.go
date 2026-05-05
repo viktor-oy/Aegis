@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/aegis/aegis/services/control-plane/internal/testutil"
 	"testing"
 	"time"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/aegis/aegis/services/control-plane/internal/hashring"
 	"github.com/aegis/aegis/services/control-plane/internal/incident"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
-	"github.com/aegis/aegis/services/control-plane/internal/testutil"
 )
 
 type staticRing struct {

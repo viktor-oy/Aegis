@@ -20,6 +20,7 @@ import (
 	"github.com/aegis/aegis/services/control-plane/internal/membership"
 	"github.com/aegis/aegis/services/control-plane/internal/server"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
+	kafkago "github.com/segmentio/kafka-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -98,7 +99,7 @@ func main() {
 	}
 
 	publisher := kafka.NewKafkaPublisher(strings.Split(kafkaBrokers, ","))
-	manager := incident.NewManager(store, publisher, localDiagnostics{}, "aegis-control-plane/"+id)
+	manager := incident.NewManager(store, publisher, localDiagnostics{}, state.CreateProducerRef(id))
 	cp := server.New(id, address, ring, manager, queueSize, 15*time.Second)
 
 	// Multiconcurrency for telemetry ingestion.
@@ -111,7 +112,22 @@ func main() {
 	go heartbeatLoop(ctx, cp)
 
 	// Background membership refresh and ring rebuild loop.
-	go membershipLoop(ctx, member, store, cp)
+	// We'll launch this below after creating the watchdog.
+
+	// Background FSM consumer loop for downstream pipeline state tracking.
+	fsmConsumer := incident.NewFSMConsumer(store, publisher, state.CreateProducerRef(id))
+	groupID := os.Getenv("AEGIS_FSM_GROUP_ID")
+	if groupID == "" {
+		groupID = "aegis-cp-fsm-group"
+	}
+	go fsmConsumerLoop(ctx, fsmConsumer, strings.Split(kafkaBrokers, ","), groupID)
+
+	// Background FSM indefinite state watchdog for stuck incident and corrupt marker alerting.
+	watchdog := incident.NewWatchdog(store, publisher, state.CreateProducerRef(id), id)
+	go watchdog.Start(ctx)
+
+	// Background membership refresh and ring rebuild loop.
+	go membershipLoop(ctx, member, store, cp, watchdog)
 
 	// gRPC server.
 	lis, err := net.Listen("tcp", grpcAddress)
@@ -216,8 +232,15 @@ func heartbeatLoop(ctx context.Context, cp *server.ControlPlane) {
 	}
 }
 
-func membershipLoop(ctx context.Context, member hashring.Member, store membership.Store, cp *server.ControlPlane) {
-	ticker := time.NewTicker(10 * time.Second)
+func membershipLoop(ctx context.Context, member hashring.Member, store membership.Store, cp *server.ControlPlane, watchdog *incident.Watchdog) {
+	intervalStr := os.Getenv("AEGIS_MEMBERSHIP_INTERVAL")
+	interval := 10 * time.Second
+	if intervalStr != "" {
+		if d, err := time.ParseDuration(intervalStr); err == nil {
+			interval = d
+		}
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -231,6 +254,9 @@ func membershipLoop(ctx context.Context, member hashring.Member, store membershi
 				ring, err := hashring.New(members, 128)
 				if err == nil {
 					cp.UpdateRing(ring)
+					if watchdog != nil {
+						watchdog.UpdateRing(ring)
+					}
 				}
 			}
 		}
@@ -244,4 +270,32 @@ func requireEnv(key string) string {
 		os.Exit(1)
 	}
 	return value
+}
+
+func fsmConsumerLoop(ctx context.Context, consumer *incident.FSMConsumer, brokers []string, groupID string) {
+	reader := kafkago.NewReader(kafkago.ReaderConfig{
+		Brokers: brokers,
+		GroupTopics: []string{
+			incident.TopicPostmortemGenerated,
+			incident.TopicDeliveryStatus,
+			incident.TopicDeliveryDLQ,
+		},
+		GroupID: groupID,
+	})
+	defer reader.Close()
+
+	for {
+		m, err := reader.ReadMessage(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Warn("fsmConsumerLoop: read message error", "error", err)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		if err := consumer.ConsumeEvent(ctx, m.Topic, m.Value); err != nil {
+			slog.Error("fsmConsumerLoop: consume event error", "topic", m.Topic, "error", err)
+		}
+	}
 }

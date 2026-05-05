@@ -33,7 +33,7 @@ class StubInferenceClient:
                 "GPU failure signal crossed threshold.",
                 "## Contributing Factors",
                 "Sustained pressure on the worker.",
-                "## Recovery",
+                "## Recovery Steps",
                 "Worker was isolated for remediation.",
                 "## Remediation",
                 "Tune alerting and drain affected node.",

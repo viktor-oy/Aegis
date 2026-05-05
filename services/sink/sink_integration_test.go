@@ -173,10 +173,10 @@ func TestSinkServiceIntegration_FileSink(t *testing.T) {
 func TestSinkServiceIntegration_EmailSink(t *testing.T) {
 	testutils.WipeTestState(t, "kafka:aegis.postmortem.generated,aegis.postmortem.delivery.status")
 	pm := types.Postmortem{
-		IncidentID:  "email-integ-123",
-		WorkerID:    "gpu-01",
-		Severity:    "high",
-		Markdown:    "# Incident 123\nDetails here.",
+		IncidentID: "email-integ-123",
+		WorkerID:   "gpu-01",
+		Severity:   "high",
+		Markdown:   "# Incident 123\nDetails here.",
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

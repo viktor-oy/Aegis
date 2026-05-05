@@ -96,4 +96,3 @@ func hash64(value string) uint64 {
 	_, _ = h.Write([]byte(value))
 	return h.Sum64()
 }
-

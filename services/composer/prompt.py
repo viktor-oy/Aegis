@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 REQUIRED_SECTIONS = [
     "Title",
@@ -17,7 +18,7 @@ def build_prompt(
     diagnostic_event: dict[str, object], 
     sys_arch: str = "",
     format_prompt: str = "",
-    guidance: dict[str, object] | None = None,
+    guidance: Optional[dict[str, object]] = None,
     label_worker_id: str = "Worker ID",
     label_incident_id: str = "Incident ID",
     label_event_id: str = "Event ID",

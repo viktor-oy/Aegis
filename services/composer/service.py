@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from .llm_client import InferenceClient
 from .prompt import build_prompt
@@ -81,7 +82,7 @@ class ComposerService:
     async def compose(
         self,
         diagnostic_event: dict[str, object],
-        guidance: dict[str, object] | None = None,
+        guidance: Optional[dict[str, object]] = None,
     ) -> GeneratedPostmortem:
         incident_id = str(diagnostic_event["incident_id"])
         worker_id = str(diagnostic_event["worker_id"])
@@ -121,7 +122,7 @@ class ComposerService:
             metadata={
                 "model": self.inference_client.model,
                 "prompt_version": self.prompt_version,
-                "generated_at": datetime.now(UTC).isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "validation_status": "valid" if validation.ok else "invalid",
                 "validation_errors": validation.errors,
             },

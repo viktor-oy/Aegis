@@ -111,4 +111,3 @@ func detection(sample state.TelemetrySample, failure state.FailureType, severity
 		CorrelationID: sample.CorrelationID,
 	}
 }
-

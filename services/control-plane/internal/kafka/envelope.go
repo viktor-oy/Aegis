@@ -27,5 +27,3 @@ func NewEnvelope(eventType string, incident state.Incident, producer string, cau
 		Payload:       payload,
 	}
 }
-
-

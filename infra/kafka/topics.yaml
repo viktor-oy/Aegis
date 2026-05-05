@@ -114,3 +114,21 @@ spec:
     strategy: any
   settings:
     retention.ms: "2592000000"
+---
+meta:
+  name: aegis.cp.corrupt-fsm.dlq
+  cluster: local
+  region: local
+  environment: dev
+spec:
+  partitions: 12
+  replicationFactor: 3
+  placement:
+    strategy: any
+  settings:
+    cleanup.policy: "compact"
+    segment.ms: "60000"
+    min.cleanable.dirty.ratio: "0.01"
+    min.compaction.lag.ms: "0"
+    delete.retention.ms: "60000"
+

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class InferenceClient(Protocol):
 class InferenceConfig:
     base_url: str
     model: str
-    api_key: str | None = None
+    api_key: Optional[str] = None
     timeout_seconds: float = 120.0
     temperature: float = 0.2
     max_tokens: int = 1500

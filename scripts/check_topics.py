@@ -7,7 +7,7 @@ def read_topic_names(path: Path) -> list[str]:
     names: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
-        if stripped.startswith("- name:"):
+        if stripped.startswith("name:") or stripped.startswith("- name:"):
             names.append(stripped.split(":", 1)[1].strip())
     return names
 

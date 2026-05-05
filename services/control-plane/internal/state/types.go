@@ -23,6 +23,10 @@ const (
 
 type FailureType string
 
+func CreateProducerRef(id string) string {
+	return "aegis-control-plane/" + id
+}
+
 const (
 	FailureMissedHeartbeat FailureType = "missed_heartbeat"
 	FailureGPUOverheat     FailureType = "gpu_overheat"
@@ -119,4 +123,3 @@ func NewEventID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-

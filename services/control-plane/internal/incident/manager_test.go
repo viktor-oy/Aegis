@@ -3,11 +3,12 @@ package incident
 import (
 	"context"
 	"errors"
+	"github.com/aegis/aegis/services/control-plane/internal/testutil"
 	"testing"
 	"time"
 
+	"github.com/aegis/aegis/services/control-plane/internal/membership"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
-	"github.com/aegis/aegis/services/control-plane/internal/testutil"
 )
 
 type failingDiagnostics struct{}
@@ -172,5 +173,90 @@ func TestValidTransitionMatrix(t *testing.T) {
 		if result != tc.valid {
 			t.Errorf("ValidTransition(%s, %s) = %v, want %v", tc.from, tc.to, result, tc.valid)
 		}
+	}
+}
+
+func TestHandleDetection_IllegalTransitionRoutesToDLQ(t *testing.T) {
+	store := testutil.NewMockStore()
+	pub := &testutil.MockPublisher{}
+	manager := NewManager(store, pub, okDiagnostics{}, "cp-test")
+	ctx := context.Background()
+
+	// Seed existing state as DIAGNOSTICS_TRIGGERED for worker-x:ECCBurst
+	_ = store.SetWorkerState(ctx, membership.WorkerState{
+		WorkerID:     "worker-x",
+		ErrorType:    string(state.FailureECCBurst),
+		IncidentID:   "inc_existing_999",
+		CurrentState: string(state.WorkerDiagnosticsTriggered),
+	})
+
+	// Try to detect again for worker-x:ECCBurst -> should attempt transition DIAGNOSTICS_TRIGGERED -> SUSPECTED, which is illegal
+	_, opened, err := manager.HandleDetection(ctx, state.DetectionResult{
+		WorkerID:      "worker-x",
+		FailureType:   state.FailureECCBurst,
+		Severity:      state.SeverityCritical,
+		Reason:        "ecc burst again",
+		ObservedAt:    time.Now().UTC(),
+		CorrelationID: "corr-ill",
+	})
+
+	if err == nil || opened {
+		t.Fatalf("expected illegal FSM transition error, got opened=%v err=%v", opened, err)
+	}
+
+	// Verify DLQ marker set in store
+	marker, _ := store.GetDLQMarker(ctx, "worker-x", string(state.FailureECCBurst))
+	if marker == "" {
+		t.Fatalf("expected DLQ marker to be set in Redis for worker-x:ECCBurst")
+	}
+
+	// Verify existing state remained untouched
+	existing, _ := store.GetWorkerState(ctx, "worker-x", string(state.FailureECCBurst))
+	if existing.CurrentState != string(state.WorkerDiagnosticsTriggered) {
+		t.Fatalf("expected existing state to remain DIAGNOSTICS_TRIGGERED, got %s", existing.CurrentState)
+	}
+
+	// Verify event published to DLQ topic
+	events := pub.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event in DLQ, got %d", len(events))
+	}
+	if events[0].Topic != TopicCorruptFSMDLQ {
+		t.Fatalf("expected topic %s, got %s", TopicCorruptFSMDLQ, events[0].Topic)
+	}
+}
+
+func TestHandleDetection_MissedHeartbeatReason(t *testing.T) {
+	store := testutil.NewMockStore()
+	pub := &testutil.MockPublisher{}
+	manager := NewManager(store, pub, okDiagnostics{}, "cp-test")
+	ctx := context.Background()
+
+	_, opened, err := manager.HandleDetection(ctx, state.DetectionResult{
+		WorkerID:      "worker-hb-reason",
+		FailureType:   state.FailureMissedHeartbeat,
+		Severity:      state.SeverityCritical,
+		Reason:        "deadline expired",
+		ObservedAt:    time.Now().UTC(),
+		CorrelationID: "corr-hb",
+	})
+
+	if err != nil || !opened {
+		t.Fatalf("expected detection to succeed, got opened=%v err=%v", opened, err)
+	}
+
+	events := pub.Events()
+	if len(events) < 1 {
+		t.Fatalf("expected events published")
+	}
+
+	detectedEvent := events[0]
+	if detectedEvent.Topic != TopicIncidentDetected {
+		t.Fatalf("expected first event to be %s, got %s", TopicIncidentDetected, detectedEvent.Topic)
+	}
+
+	reason, ok := detectedEvent.Envelope.Payload["reason"].(string)
+	if !ok || reason != "Node failure suspected due to missed heartbeat min-heap expiry" {
+		t.Fatalf("unexpected reason in payload: %v", detectedEvent.Envelope.Payload["reason"])
 	}
 }

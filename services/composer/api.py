@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -33,7 +33,7 @@ app = FastAPI(
 
 class ComposeRequest(BaseModel):
     diagnostic_event: dict[str, Any]
-    guidance: dict[str, Any] | None = None
+    guidance: Optional[dict[str, Any]] = None
 
 
 class ComposeResponse(BaseModel):

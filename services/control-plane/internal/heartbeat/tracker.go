@@ -125,4 +125,3 @@ func (h *deadlineHeap) Pop() any {
 	*h = old[:n-1]
 	return item
 }
-

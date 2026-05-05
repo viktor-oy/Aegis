@@ -2,13 +2,15 @@ package testutils
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-// GetTopicPartitionCount parses a basic topics yaml file to find the number of partitions for a topic.
-func GetTopicPartitionCount(topicName string, yamlPath string) int {
+// GetTopicPartitionCount parses the project topics yaml file to find the number of partitions for a topic.
+func GetTopicPartitionCount(topicName string) int {
+	yamlPath := filepath.Join(GetProjectRoot(nil), "infra", "kafka", "topics.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return 12 // safe fallback

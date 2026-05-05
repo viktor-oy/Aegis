@@ -4,18 +4,34 @@ import (
 	"context"
 	"encoding/json"
 
+	"time"
+
 	"github.com/aegis/aegis/services/control-plane/internal/state"
 	"github.com/segmentio/kafka-go"
 )
 
 type KafkaPublisher struct {
 	brokers []string
+	writer  *kafka.Writer
 }
 
 func NewKafkaPublisher(brokers []string) *KafkaPublisher {
+	writer := &kafka.Writer{
+		Addr:                   kafka.TCP(brokers...),
+		Balancer:               &kafka.Hash{},
+		RequiredAcks:           kafka.RequireOne,
+		AllowAutoTopicCreation: false,
+		BatchTimeout:           10 * time.Millisecond,
+		BatchSize:              1,
+	}
 	return &KafkaPublisher{
 		brokers: brokers,
+		writer:  writer,
 	}
+}
+
+func (p *KafkaPublisher) Close() error {
+	return p.writer.Close()
 }
 
 func (p *KafkaPublisher) Publish(ctx context.Context, topic string, envelope state.EventEnvelope) error {
@@ -24,16 +40,8 @@ func (p *KafkaPublisher) Publish(ctx context.Context, topic string, envelope sta
 		return err
 	}
 
-	writer := &kafka.Writer{
-		Addr:                   kafka.TCP(p.brokers...),
-		Topic:                  topic,
-		Balancer:               &kafka.Hash{},
-		RequiredAcks:           kafka.RequireOne, // Configurable if needed
-		AllowAutoTopicCreation: false,
-	}
-	defer writer.Close()
-
-	return writer.WriteMessages(ctx, kafka.Message{
+	return p.writer.WriteMessages(ctx, kafka.Message{
+		Topic: topic,
 		Key:   []byte(envelope.WorkerID), // Partition by WorkerID
 		Value: payloadBytes,
 	})

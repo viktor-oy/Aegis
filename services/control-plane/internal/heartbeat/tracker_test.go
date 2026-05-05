@@ -109,4 +109,3 @@ func TestTrackerExpiredSetsStateSuspected(t *testing.T) {
 		t.Fatalf("expected SUSPECTED state, got %s", expired[0].State)
 	}
 }
-

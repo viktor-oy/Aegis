@@ -20,6 +20,43 @@ AI infra is messy. GPUs overheat, VRAM blows up, model servers crash, and networ
 - The Composer only reaches out to an OpenAI-compatible endpoint *after* we've deterministically caught an incident.
 - Go Sink Workers handle the final mile: dumping postmortems to local files or Email via SMTP, complete with idempotency, retries, and dead-letter queues.
 
+## Control Plane FSM Architecture & Formal Verification
+
+Aegis enforces a mathematically rigorous, deterministic Finite State Machine (FSM) to govern GPU/AI worker lifecycle state across distributed control plane replicas and asynchronous Kafka pipelines. 
+
+### 1. Per-Error-Type State Tracking & Mutex Separation
+To prevent concurrent failure signals on a single GPU node from clobbering one another, authoritative FSM state is stored in Redis keyed by composite tuple `(worker_id, error_type)` under `aegis:cp:worker:state:<worker_id>:<error_type>`. This ensures that a transient non-fatal warning (e.g., `GPUOverheat`) operates independently from a concurrent hardware fault (`ECCBurst`).
+
+#### Engineering Judgement: Short-Lived Mutex vs. Authoritative FSM State
+Aegis decouples short-lived distributed mutex locks (`aegis:lock:incident:<worker_id>:<incident_id>`, default TTL 10m) from long-lived authoritative FSM state (`aegis:cp:worker:state:<worker_id>:<error_type>`). 
+- **The Short-Lived Mutex Lock** prevents race conditions between concurrent Control Plane replicas during initial suspicion (`SUSPECTED`), guaranteeing that only one replica triggers diagnostics and emits an incident detected event.
+- **The Authoritative FSM State** persists the end-to-end incident lifecycle (`HEALTHY -> ... -> RESOLVED`) across asynchronous downstream services (Composer and Sinks). If diagnostics collection or LLM postmortem composition exceeds 10 minutes, the distributed mutex lock expires safely while the authoritative FSM state prevents duplicate incident triggering for that failure mode.
+
+#### Engineering Judgement: FSM Handoff via Redis Between Control Planes
+Control Plane replicas are entirely stateless regarding FSM logic, relying exclusively on Redis for state handoff. If a CP node crashes or the consistent hash ring rebalances due to scaling, the newly assigned CP node for a given `worker_id` seamlessly inherits the exact FSM state, timeline, and correlation IDs from Redis. This prevents "dropped incidents" and "duplicate postmortems" during Kubernetes autoscaling or rolling updates. Furthermore, because Redis is the singular FSM authority, any state updates produced by asynchronous Kafka consumers (e.g., the downstream Composer emitting `POSTMORTEM_GENERATED`) are safely and deterministically applied to the FSM regardless of which CP replica happens to consume the Kafka event.
+
+### 2. State Transition Matrix
+Worker state progresses through a strict, formally verified sequence:
+`HEALTHY -> SUSPECTED -> DIAGNOSTICS_TRIGGERED -> DIAGNOSTICS_COLLECTED -> POSTMORTEM_REQUESTED -> POSTMORTEM_GENERATED -> DELIVERY_IN_PROGRESS -> DELIVERED/DELIVERY_FAILED -> RESOLVED`.
+
+| From State | Allowed Target States |
+| :--- | :--- |
+| `HEALTHY` | `SUSPECTED` |
+| `SUSPECTED` | `DIAGNOSTICS_TRIGGERED`, `RESOLVED` |
+| `DIAGNOSTICS_TRIGGERED` | `DIAGNOSTICS_COLLECTED` |
+| `DIAGNOSTICS_COLLECTED` | `POSTMORTEM_REQUESTED` |
+| `POSTMORTEM_REQUESTED` | `POSTMORTEM_GENERATED` |
+| `POSTMORTEM_GENERATED` | `DELIVERY_IN_PROGRESS` |
+| `DELIVERY_IN_PROGRESS` | `DELIVERED`, `DELIVERY_FAILED` |
+| `DELIVERY_FAILED` / `DELIVERED` | `RESOLVED` |
+
+#### Corrupt FSM Handling & Non-Panic Guarantee
+Control plane routing and state transitions are deterministic: **the Control Plane never panics on illegal FSM transitions or malformed state messages**. If an illegal state transition is attempted:
+1. The transition is rejected and logged with structured error context.
+2. The counter metric `aegis_fsm_illegal_transitions_total` is incremented.
+3. An immutable corrupt-FSM marker is written to Redis (`dlq:corrupt:<worker_id>:<error_type>`).
+4. The event is routed immediately to the dead-letter queue topic `aegis.cp.corrupt-fsm.dlq` for SRE inspection and alerting.
+
 ## Cloud Deployment Notes
 
 Built for K8s. We use Helm and Kustomize to spin up the standalone Aegis services alongside Kafka, Redis, PostgreSQL, MinIO, a mock Slack webhook, and an OpenAI-compatible LLM endpoint (like vLLM). We lean on Kubernetes for the boring stuff (DNS, scheduling, secrets, autoscaling) so Aegis code can focus entirely on shard routing, failure detection, state transitions, and correlation propagation.
@@ -60,7 +97,7 @@ Tilt applies the Helm/Kustomize artifacts. We use live update rules so your Pyth
 
 ## Services
 
-- `aegis-control-plane`: The Go brains. Handles ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication. Configured via `AEGIS_CP_ADDRESS`, `AEGIS_GRPC_ADDRESS`, `AEGIS_REDIS_ADDR` and `AEGIS_KAFKA_BROKERS`. It fully supports multicore telemetry consumption.
+- `aegis-control-plane`: The Go brains. Handles ownership, ingestion, failure detection, incident locks, diagnostics, and Kafka publication. Configured via `AEGIS_CP_ADDRESS`, `AEGIS_GRPC_ADDRESS`, `AEGIS_REDIS_ADDR`, `AEGIS_KAFKA_BROKERS`, `AEGIS_MEMBERSHIP_INTERVAL`, and `AEGIS_FSM_GROUP_ID`. It fully supports multicore telemetry consumption.
 - `aegis-agent`: The Python GPU/AI worker monitor. We packed it with synthetic failure modes, a diagnostics buffer, and a local FastAPI Swagger UI so you can test API endpoints directly.
 - `aegis-composer`: The Postmortem Composer (Python, FastAPI, Kafka). It grabs diagnostics, formats them via an OpenAI-compatible endpoint, validates the Markdown, and throws the generated postmortem back into Kafka. Also exposes a synchronous API endpoint for quick testing.
 
@@ -90,6 +127,31 @@ Alternatively, you can volume mount your custom markdown files directly into the
 - `aegis.postmortem.delivery.status`
 - `aegis.postmortem.delivery.retry`
 - `aegis.postmortem.delivery.dlq`
+- `aegis.cp.corrupt-fsm.dlq`
+
+## DLQ Log Compaction Semantics & Tombstone Retention
+
+Unlike standard ephemeral message queues (`cleanup.policy: delete`), Aegis state machine, DLQ, and corruption topics (`aegis.cp.corrupt-fsm.dlq`) are configured with **Log Compaction** (`cleanup.policy: compact`).
+
+### 1. Clean Section vs. Dirty Section
+In compacted Kafka topics, log storage is logically divided across underlying closed segment files for each partition:
+- **Clean Section**: Comprises the oldest closed segment files where the log cleaner has already scanned and merged records, retaining only the latest value for each distinct message key (`worker_id:error_type`).
+- **Dirty Section**: Comprises newer closed segment files containing uncompacted records awaiting cleaner processing.
+
+```text
+[Oldest Segments: Clean Section (Unique Keys)] | [Newer Segments: Dirty Section (Uncompacted)] | [Active Segment]
+```
+
+#### Engineering Judgement: Compaction Tuning & Tombstone Retention
+We configure custom retention and compaction thresholds on `aegis.cp.corrupt-fsm.dlq` in `infra/kafka/topics.yaml`:
+- `min.cleanable.dirty.ratio: "0.01"`: Triggers the background Kafka log cleaner as soon as 1% of closed segment log data is dirty or tombstoned. This aggressive compaction ensures that operators inspecting DLQ topics see an un-bloated, authoritative snapshot of currently corrupt worker FSMs without scanning historical noise.
+- `delete.retention.ms: "60000"`: Retains tombstone records (messages where `value=null` published when an SRE repairs a corrupt FSM) for exactly 60 seconds before permanent physical removal from the Clean Section. This 60-second window gives offline or restarting monitoring consumers sufficient time to observe that a corrupt FSM marker was cleared, while preventing tombstone garbage from indefinitely bloating the compacted log.
+
+### 2. SRE Replay & Postmortem Regeneration Workflows
+In operational environments, an SRE may intentionally reset a Kafka consumer group offset (e.g., using `aegis-cli` or `kafka-consumer-groups.sh`) to re-consume diagnostic payloads and regenerate a postmortem after an AI model or prompt upgrade. 
+> [!IMPORTANT]
+> **Operational Idempotency Guarantees**
+> When an SRE intentionally resets a consumer group offset to replay and regenerate a postmortem, receiving the newly generated postmortem in their email inbox is typically desired. Downstream email and file sink workers treat replayed `POSTMORTEM_GENERATED` events as authoritative updates, executing idempotently without dropping intentional re-deliveries.
 
 ## Workflows
 
@@ -188,6 +250,12 @@ KEDA ScaledObjects look at CP queue depth and active agents for the Control Plan
 
 ## Helm, Kustomize, and Deployment Environments
 
+## Watchdog Sharding
+Rather than introducing a distributed locking mechanism (like a Redis lock per FSM or a leader-election algorithm) for Watchdog duties, we reused the exact same Consistent Hash Ring used by the data plane routing. This ensures:
+1. **Symmetry:** The same node that handles a worker's telemetry also handles its FSM cleanup.
+2. **Simplicity:** No new infrastructure, dependencies, or complex race-condition mitigation are required.
+3. **Resilience:** The Watchdog naturally self-heals and rebalances workloads alongside normal control-plane scaling and failover.
+
 Helm owns the reusable cloud chart under `infra/helm/aegis`. We employ a hybrid architecture where Kustomize orchestrates the rendering of the Helm chart for specific environments, located under `infra/kustomize/overlays/`.
 
 ### Engineering Judgment on Production Defaults
@@ -248,6 +316,45 @@ helm install aegis-production aegis/aegis --namespace aegis-system --create-name
 
 
 Helm owns the reusable cloud chart under `infra/helm/aegis`. Kustomize overlays under `infra/kustomize/overlays/local` and `infra/kustomize/overlays/cloud` inject small environmental differences. Terraform under `infra/terraform/local` is strictly optional and just provisions the foundation; Aegis expects to deploy into an existing cluster without relying on Terraform.
+
+## SRE Operations & Incident Management (How-To & Engineering Judgement)
+
+### How-To: Resolving Incidents & Repairing Corrupt FSMs (`aegis-cli`)
+When an incident has been investigated or an FSM enters an illegal state due to network partition or operator override, use the SRE administrative CLI (`aegis-cli`) to resolve the incident and publish repair audit events:
+
+```sh
+# Default resolve: transitions state to RESOLVED, clears DLQ markers, and publishes repair audit event
+aegis-cli resolve <worker_id> <error_type>
+
+# Fix corrupt FSM: clears DLQ markers, resets FSM state to HEALTHY after clearing stuck/corrupt flags
+aegis-cli resolve <worker_id> <error_type> --fix-corrupt-fsm
+
+# Force override: ignores FSM transition validation errors and forcefully overwrites state in Redis
+aegis-cli resolve <worker_id> <error_type> --force
+
+# Force a specific target state: explicitly sets the state (prompts for confirmation)
+aegis-cli resolve <worker_id> <error_type> --force --state HEALTHY
+```
+
+#### Engineering Judgement: Why Publish Repair Audit Events?
+When `aegis-cli resolve` clears an FSM state or corrupt marker in Redis, it simultaneously publishes an audit event to `aegis.cp.corrupt-fsm.dlq` (`event_type: "aegis.cp.corrupt-fsm.repair"`). This ensures that automated SRE alerting dashboards and downstream audit consumers receive an immediate, verifiable record of operator intervention without polling Redis.
+
+### How-To: Configuring & Monitoring the Indefinite State Watchdog
+Aegis Control Plane runs an autonomous background Watchdog that continuously scans active FSM states in Redis for stuck incidents and corrupt DLQ markers.
+
+```sh
+# Configure watchdog scan interval (default: 300 seconds)
+export AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS=60
+```
+
+- **Stuck Incident Detection**: If an active worker state remains in an intermediate stage (e.g., `DIAGNOSTICS_TRIGGERED`, `POSTMORTEM_REQUESTED`, `DELIVERY_IN_PROGRESS`) for over 15 minutes, the Watchdog emits a structured warning log (`metric: "aegis_fsm_stuck_incident"`) and publishes an alert to `aegis.cp.corrupt-fsm.dlq`.
+
+#### Engineering Judgement: Purpose of "aegis_fsm_stuck_incident"
+The primary purpose of the `aegis_fsm_stuck_incident` metric is to proactively surface hidden pipeline failures and split-brain scenarios. A stuck incident usually indicates that a downstream asynchronous dependency (like the AI Composer, SMTP Sink, or a Kafka broker) silently dropped an event or timed out, or that a network partition caused the control-plane to lose track of the incident. Alerting on this metric gives SREs the exact `worker_id` and `error_type` needed to manually investigate the downstream systems or use `aegis-cli resolve` to unblock the state.
+
+Crucially, **the Watchdog publishes this metric continuously to the Kafka DLQ topic** (`aegis.cp.corrupt-fsm.dlq`) on every scan interval as long as the incident remains stuck. This ensures constant visibility. SREs can inspect these continuous alerts using Kafka UI tools (like `topicctl`, Redpanda Console, or AKHQ) to filter and trace exactly which state transitions are failing.
+- **Corrupt Marker Alerting**: If any DLQ markers exist in Redis, the Watchdog emits `metric: "aegis_fsm_corrupt_marker_detected"`.
+- **No-Auto-Resolve Policy**: To prevent silent state suppression and ensure root-cause accountability, the Watchdog **emits warnings and alerts without auto-resolving or deleting** stuck or corrupt states in Redis.
 
 ## Technologies Used
 
