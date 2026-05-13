@@ -135,6 +135,8 @@ Sink fanout workflow:
 Kafka generated postmortem -> Go Sink Workers -> Slack + PostgreSQL + S3 -> status/retry/DLQ topics
 ```
 
+Configuration details live in `docs/configuration.md`. Two important switches are `AEGIS_TELEMETRY_DATA_SOURCE=GPU|MOCK` for the Agent and `AEGIS_LLM_BASE_URL` for the Composer's OpenAI-compatible inference endpoint.
+
 ## Observability
 
 All services emit structured logs, metrics, and traces through OpenTelemetry Collector. Correlation IDs cross gRPC, Kafka, composer, sinks, and owner redirects. Required metrics include active agents, missed heartbeats, incidents, diagnostics, postmortem latency, Kafka lag, delivery status, DLQ count, CP queue depth, `ResourceExhausted`, redirect count, ring rebuild count, Redis polling errors, lock failures, and AI latency/failures.
