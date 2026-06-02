@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from random import Random
 from subprocess import run
 
@@ -51,8 +51,9 @@ class SyntheticCollector:
         self._ecc_errors = 0
         self._sequence = 0
 
-    def set_mode(self, mode: str) -> None:
+    def set_mode(self, mode: str, correlation_id: str | None = None) -> None:
         self.mode = mode
+        self.forced_correlation_id = correlation_id
 
     def collect(self, correlation_id: str | None = None) -> TelemetrySample | None:
         self._sequence += 1
@@ -85,7 +86,7 @@ class SyntheticCollector:
 
         return TelemetrySample(
             worker_id=self.worker_id,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
             gpu_utilization=0.74,
             vram_used_bytes=vram_used,
             vram_total_bytes=vram_total,
@@ -96,7 +97,7 @@ class SyntheticCollector:
             local_queue_depth=queue_depth,
             model_server_healthy=model_healthy,
             synthetic_failure_flag=failure_flag,
-            correlation_id=correlation_id or f"{self.worker_id}-{self._sequence}",
+            correlation_id=correlation_id or getattr(self, "forced_correlation_id", None) or f"{self.worker_id}-{self._sequence}",
         )
 
 
@@ -133,7 +134,7 @@ class GPUTelemetryCollector:
         ]
         return TelemetrySample(
             worker_id=self.worker_id,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
             gpu_utilization=_parse_float(gpu_util) / 100.0,
             vram_used_bytes=int(_parse_float(mem_used_mib) * 1024 * 1024),
             vram_total_bytes=int(_parse_float(mem_total_mib) * 1024 * 1024),

@@ -17,7 +17,12 @@ export AEGIS_KUBE_CONTEXT
 .PHONY: help lint test test-unit test-intg test-python test-go tilt-infra-up proto docs-check tf-init tf-up tf-down dev-up init-kafka
 
 help:
-	@printf '%s\n' "Aegis targets: lint test test-unit test-intg test-agent test-control-plane test-composer test-sink dev-up tilt-infra-up proto docs-check init-kafka"
+	@printf '%s\n' "Aegis targets: lint test test-unit test-intg test-agent test-control-plane test-composer test-sink dev-up tilt-infra-up proto docs-check init-kafka scenario"
+
+
+# ==========================================
+# === TESTING & LINTING ====================
+# ==========================================
 
 lint:
 	ruff check services tests
@@ -56,7 +61,7 @@ test-control-plane-unit:
 
 test-control-plane-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -p 1 -tags=integration -run ^TestIntegration_ ./services/control-plane/internal/server/... ./services/control-plane/internal/incident/...
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -count=1 -p 1 -tags=integration -run ^TestIntegration_ ./services/control-plane/internal/server/... ./services/control-plane/internal/incident/...
 
 test-sink: test-sink-unit test-sink-intg
 
@@ -65,61 +70,144 @@ test-sink-unit:
 
 test-sink-intg:
 	./tests/integration/testutils/ensure_test_infra.py
-	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -tags=integration -run ^TestIntegration_ ./services/sink
+	go run gotest.tools/gotestsum@latest $(GOTESTSUM_FLAGS) -- -count=1 -tags=integration -run ^TestIntegration_ ./services/sink
 
 
-tilt-infra-up:
-	tilt up -f Tiltfile.infra
-
-tilt-test-infra-up: clear-test-ports
-	AEGIS_ENV=intg-test tilt up --port 10352 --context kind-aegis-intg-test -f Tiltfile.infra
-
-init-kafka:
-	kubectl $(if $(AEGIS_KUBE_CONTEXT),--context $(AEGIS_KUBE_CONTEXT)) wait --for=condition=ready pod -l app.kubernetes.io/name=kafka -n aegis-system --timeout=300s
-	mise exec -- topicctl apply infra/kafka/topics.yaml --cluster-config infra/kafka/cluster.yaml --skip-confirm
-
-wipe-infra-state:
-	@./scripts/wipe_infra_state.py $(TARGETS)
-
-clear-test-ports:
-	@./scripts/clear_test_ports.py
-
-test-tilt-logs:
-	tail -f $(TILT_TEST_LOG)
-
-
+# ==========================================
+# === TERRAFORM INFRASTRUCTURE =============
+# ==========================================
 
 tf-init:
 	mise exec -- terraform -chdir=infra/terraform/local init
 
+# Internal Base Targets
 _tf-apply: tf-init
 	mise exec -- terraform -chdir=infra/terraform/local workspace select -or-create $(WORKSPACE)
-	mise exec -- terraform -chdir=infra/terraform/local apply -auto-approve
+	mise exec -- terraform -chdir=infra/terraform/local apply -auto-approve $(if $(NODE_COUNT),-var="node_count=$(NODE_COUNT)")
 
+_tf-destroy:
+	mise exec -- terraform -chdir=infra/terraform/local workspace select $(WORKSPACE)
+	mise exec -- terraform -chdir=infra/terraform/local destroy -auto-approve
+
+_tf-kill:
+	kind delete cluster --name $(CLUSTER_NAME) || true
+
+# Environments
 tf-up:
 	@$(MAKE) _tf-apply WORKSPACE=default
+
+tf-down:
+	@$(MAKE) _tf-destroy WORKSPACE=default
+
+tf-kill:
+	@$(MAKE) _tf-kill CLUSTER_NAME=aegis
+	rm -f infra/terraform/local/terraform.tfstate infra/terraform/local/terraform.tfstate.backup
 
 test-tf-up:
 	@$(MAKE) _tf-apply WORKSPACE=intg-test
 
-tf-down:
-	mise exec -- terraform -chdir=infra/terraform/local destroy -auto-approve
+test-tf-down:
+	@$(MAKE) _tf-destroy WORKSPACE=intg-test
 
-tf-kill:
-	kind delete cluster --name aegis || true
-	rm -f infra/terraform/local/terraform.tfstate*
-	rm -rf infra/terraform/local/.terraform
-	rm -f infra/terraform/local/.terraform.lock.hcl
+test-tf-kill:
+	@$(MAKE) _tf-kill CLUSTER_NAME=aegis-intg-test
+	rm -rf infra/terraform/local/terraform.tfstate.d/intg-test
+
+scenario-tf-up:
+	@$(MAKE) _tf-apply WORKSPACE=scenario
+
+scenario-tf-down:
+	@$(MAKE) _tf-destroy WORKSPACE=scenario
+
+scenario-tf-kill:
+	@$(MAKE) _tf-kill CLUSTER_NAME=aegis-scenario
+	rm -rf infra/terraform/local/terraform.tfstate.d/scenario
+
+tf-destroy-all: tf-down test-tf-down scenario-tf-down
+
+tf-kill-all: tf-kill test-tf-kill scenario-tf-kill
+
+
+# ==========================================
+# === TILT WORKLOADS =======================
+# ==========================================
 
 dev-up: tf-up
-	tilt up
+	tilt up --context kind-aegis
 
 dev-up-0: tf-kill dev-up
 
 dev-up-0-lite:
-	kubectl delete all --all -n aegis-system --force --grace-period=0 || true
-	kubectl delete pvc,configmap,secret,ingress --all -n aegis-system --force --grace-period=0 || true
-	tilt up
+	kubectl --context kind-aegis delete all --all -n aegis-system --force --grace-period=0 || true
+	kubectl --context kind-aegis delete pvc,configmap,secret,ingress --all -n aegis-system --force --grace-period=0 || true
+	tilt up --context kind-aegis
+
+tilt-infra-up:
+	tilt up --context kind-aegis -f Tiltfile.infra
+
+tilt-test-infra-up:
+	@AEGIS_KUBE_CONTEXT=kind-aegis-intg-test $(MAKE) clear-tilt-ports
+	AEGIS_ENV=intg-test tilt up --port 10352 --context kind-aegis-intg-test -f Tiltfile.infra
+
+tilt-scenario-up:
+	AEGIS_ENV=scenario AEGIS_KUSTOMIZE_OVERLAY=$(AEGIS_KUSTOMIZE_OVERLAY) mise exec -- tilt up -f Tiltfile --port 10354 --context kind-aegis-scenario
+
+
+# ==========================================
+# === SCENARIO RUNNER ======================
+# ==========================================
+
+scenario:
+	@if [ ! -d "scripts/scenario-runner/.venv" ]; then \
+		echo "Bootstrapping scenario runner environment..."; \
+		python3 -m venv scripts/scenario-runner/.venv; \
+		scripts/scenario-runner/.venv/bin/pip install -q -e ".[dev]"; \
+	fi
+	@scripts/scenario-runner/.venv/bin/python3 scripts/scenario-runner/runner.py --file $(FILE) $(ARGS)
+
+
+# ==========================================
+# === UTILITIES ============================
+# ==========================================
+
+# ==========================================
+# === SRE CLI ==============================
+# ==========================================
+
+cli-build:
+	@echo "Building SRE CLI..."
+	@mkdir -p bin
+	go build -o bin/aegis ./services/control-plane/cmd/aegis-cli
+	@echo "Built bin/aegis"
+
+cli:
+	@if [ ! -f bin/aegis ]; then $(MAKE) cli-build; fi
+	@./bin/aegis $(ARGS)
+
+cli-dev:
+	go run ./services/control-plane/cmd/aegis-cli $(ARGS)
+
+init-kafka:
+	mise exec -- kubectl $(if $(AEGIS_KUBE_CONTEXT),--context $(AEGIS_KUBE_CONTEXT)) wait --for=condition=ready pod -l app.kubernetes.io/name=kafka -n aegis-system --timeout=300s
+	# Note: kubectl wait only guarantees the pod is ready inside the cluster. 
+	# Tilt's local port-forwarding (which topicctl uses via localhost) is established asynchronously 
+	# and might take a fraction of a second longer to bind. This retry loop handles that race condition.
+	@n=0; until [ $$n -ge 10 ]; do \
+		AEGIS_KAFKA_BROKER_ADDR=$(if $(AEGIS_KAFKA_BROKER_ADDR),$(AEGIS_KAFKA_BROKER_ADDR),localhost:39092) mise exec -- topicctl apply infra/kafka/topics.yaml --cluster-config infra/kafka/cluster.yaml --expand-env --skip-confirm && break; \
+		n=$$((n+1)); \
+		echo "Waiting for Kafka port-forward to be ready... (attempt $$n/10)"; \
+		sleep 3; \
+	done; \
+	if [ $$n -ge 10 ]; then echo "Failed to initialize Kafka topics"; exit 1; fi
+
+wipe-infra-state:
+	@./scripts/wipe_infra_state.py $(TARGETS)
+
+clear-tilt-ports:
+	@./scripts/clear_tilt_ports.py
+
+test-tilt-logs:
+	tail -f $(TILT_TEST_LOG)
 
 proto:
 	protoc -I proto --go_out=. --go_opt=module=github.com/aegis/aegis --go-grpc_out=. --go-grpc_opt=module=github.com/aegis/aegis proto/aegis/v1/aegis.proto
@@ -131,4 +219,3 @@ proto:
 
 docs-check:
 	python3 scripts/check_topics.py
-

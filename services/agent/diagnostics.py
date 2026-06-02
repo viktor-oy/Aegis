@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from .telemetry import TelemetrySample
 
@@ -30,7 +30,7 @@ class DiagnosticBuffer:
         self.events.append(
             {
                 "name": name,
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "payload": payload or {},
             }
         )
@@ -46,7 +46,7 @@ class DiagnosticBuffer:
         return {
             "worker_id": self.worker_id,
             "incident_id": incident_id,
-            "collected_at": datetime.now(UTC).isoformat(),
+            "collected_at": datetime.now(timezone.utc).isoformat(),
             "diagnostic_status": status,
             "correlation_id": correlation_id,
             "telemetry_window": list(self.telemetry),

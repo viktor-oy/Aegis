@@ -34,6 +34,7 @@ func TestMain(m *testing.M) {
 		testutils.DefaultKafkaBrokers,
 		map[string]string{
 			"AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS": "1",
+			"AEGIS_GRPC_MAX_MSG_SIZE":             "10485760", // 10MB to test oversized Kafka payloads safely
 		},
 	)
 
@@ -59,6 +60,48 @@ func getWorkerState(ctx context.Context, rClient *redis.Client, workerID, errorT
 	return &ws, nil
 }
 
+// waitForDLQEvent spawns Kafka readers on all partitions of the given topic
+// and returns a channel that will emit the parsed EventEnvelope when the matcher function returns true.
+func waitForDLQEvent(topic string, matcher func(state.EventEnvelope) bool) <-chan state.EventEnvelope {
+	numPartitions := testutils.GetTopicPartitionCount(topic)
+	foundCh := make(chan state.EventEnvelope, 1)
+
+	for p := 0; p < numPartitions; p++ {
+		go func(partition int) {
+			reader := segmentiokafka.NewReader(segmentiokafka.ReaderConfig{
+				Brokers:   testutils.DefaultKafkaBrokers,
+				Topic:     topic,
+				Partition: partition,
+			})
+			_ = reader.SetOffset(segmentiokafka.LastOffset)
+
+			// We only need to wait a reasonable time for the test to complete
+			rCtx, rCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer rCancel()
+			defer reader.Close()
+
+			for {
+				m, err := reader.ReadMessage(rCtx)
+				if err != nil {
+					break // timeout or closed
+				}
+				var env state.EventEnvelope
+				if err := json.Unmarshal(m.Value, &env); err == nil {
+					if matcher(env) {
+						select {
+						case foundCh <- env:
+						default:
+						}
+						break
+					}
+				}
+			}
+		}(p)
+	}
+
+	return foundCh
+}
+
 func publishRawMessage(t *testing.T, topic string, payload interface{}) {
 	t.Helper()
 	writer := &segmentiokafka.Writer{
@@ -82,7 +125,8 @@ func publishRawMessage(t *testing.T, topic string, payload interface{}) {
 }
 
 func TestIntegration_Incident_FSMTransitions(t *testing.T) {
-	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected,aegis.dlq,aegis.diagnostics.requested,aegis.diagnostics.collected,aegis.postmortem.requested")
+	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
@@ -178,13 +222,14 @@ func TestIntegration_Incident_FSMTransitions(t *testing.T) {
 	// 3. FSM step: Composer generates postmortem -> CP immediately transitions to DELIVERY_IN_PROGRESS
 	assertTransition(incident.TopicPostmortemGenerated, incident.TopicPostmortemGenerated, state.WorkerDeliveryInProgress)
 
-	assertTransition(incident.TopicDeliveryStatus, "aegis.sink.delivered", state.WorkerResolved)
+	assertTransition(incident.TopicDeliveryStatus, "aegis.sink.delivered", state.WorkerDelivered)
 
 	testutils.LogInfo(t, "✅ Integration test passed: FSM transitions verified against live Redis & Kafka")
 }
 
 func TestIntegration_Incident_StuckFSM_WatchdogAlert(t *testing.T) {
-	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected,aegis.dlq,aegis.diagnostics.requested,aegis.diagnostics.collected,aegis.postmortem.requested")
+	testutils.WipeTestState(t, "redis")
+
 	// client not directly used, but server is running
 
 	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
@@ -198,41 +243,9 @@ func TestIntegration_Incident_StuckFSM_WatchdogAlert(t *testing.T) {
 	errType := state.FailureSynthetic
 
 	testutils.LogInfo(t, "📖 Starting Kafka readers for DLQ topic...")
-	topic := incident.TopicCorruptFSMDLQ
-	numPartitions := testutils.GetTopicPartitionCount(topic)
-
-	foundCh := make(chan bool, 1)
-	for p := 0; p < numPartitions; p++ {
-		go func(partition int) {
-			reader := segmentiokafka.NewReader(segmentiokafka.ReaderConfig{
-				Brokers:   testutils.DefaultKafkaBrokers,
-				Topic:     topic,
-				Partition: partition,
-			})
-			_ = reader.SetOffset(segmentiokafka.LastOffset)
-
-			rCtx, rCancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer rCancel()
-			defer reader.Close()
-
-			for {
-				m, err := reader.ReadMessage(rCtx)
-				if err != nil {
-					break
-				}
-				var env state.EventEnvelope
-				if err := json.Unmarshal(m.Value, &env); err == nil && env.WorkerID == workerID {
-					if env.EventType == "aegis.cp.fsm_stuck_incident" {
-						select {
-						case foundCh <- true:
-						default:
-						}
-						break
-					}
-				}
-			}
-		}(p)
-	}
+	foundCh := waitForDLQEvent(incident.TopicCorruptFSMDLQ, func(env state.EventEnvelope) bool {
+		return env.WorkerID == workerID && env.EventType == "aegis.cp.fsm_stuck_incident"
+	})
 
 	// Give the readers a moment to connect and set offset
 	time.Sleep(1 * time.Second)
@@ -264,7 +277,7 @@ func TestIntegration_Incident_StuckFSM_WatchdogAlert(t *testing.T) {
 }
 
 func TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding(t *testing.T) {
-	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected,aegis.dlq,aegis.diagnostics.requested,aegis.diagnostics.collected,aegis.postmortem.requested,aegis.postmortem.generated")
+	testutils.WipeTestState(t, "redis")
 
 	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
 	defer rClient.Close()
@@ -277,41 +290,9 @@ func TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding(t *testing.T
 	errType := string(state.FailureSynthetic)
 
 	testutils.LogInfo(t, "📖 Starting Kafka readers for DLQ topic...")
-	topic := incident.TopicCorruptFSMDLQ
-	numPartitions := testutils.GetTopicPartitionCount(topic)
-
-	foundCh := make(chan string, 1)
-	for p := 0; p < numPartitions; p++ {
-		go func(partition int) {
-			reader := segmentiokafka.NewReader(segmentiokafka.ReaderConfig{
-				Brokers:   testutils.DefaultKafkaBrokers,
-				Topic:     topic,
-				Partition: partition,
-			})
-			_ = reader.SetOffset(segmentiokafka.LastOffset)
-
-			rCtx, rCancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer rCancel()
-			defer reader.Close()
-
-			for {
-				m, err := reader.ReadMessage(rCtx)
-				if err != nil {
-					break
-				}
-				var env state.EventEnvelope
-				if err := json.Unmarshal(m.Value, &env); err == nil && (env.WorkerID == workerID || strings.Contains(env.CausationID, workerID)) {
-					if env.EventType == "aegis.cp.fsm_corrupt_marker" {
-						select {
-						case foundCh <- env.Producer:
-						default:
-						}
-						break
-					}
-				}
-			}
-		}(p)
-	}
+	foundCh := waitForDLQEvent(incident.TopicCorruptFSMDLQ, func(env state.EventEnvelope) bool {
+		return (env.WorkerID == workerID || strings.Contains(env.CausationID, workerID)) && env.EventType == "aegis.cp.fsm_corrupt_marker"
+	})
 
 	time.Sleep(2 * time.Second)
 
@@ -328,10 +309,11 @@ func TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding(t *testing.T
 	time.Sleep(10 * time.Second)
 
 	testutils.LogInfo(t, "📖 Publishing poison pill to trigger FSM corruption...")
-	
+
 	poisonPill := state.EventEnvelope{
-		EventType: incident.TopicPostmortemGenerated,
-		WorkerID:  workerID,
+		EventType:  incident.TopicPostmortemGenerated,
+		WorkerID:   workerID,
+		IncidentID: incidentID,
 		Payload: map[string]any{
 			"worker_id":    workerID,
 			"failure_type": errType,
@@ -344,7 +326,8 @@ func TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding(t *testing.T
 	foundCorruptIncident := false
 	var actualProducer string
 	select {
-	case actualProducer = <-foundCh:
+	case env := <-foundCh:
+		actualProducer = env.Producer
 		foundCorruptIncident = true
 	case <-time.After(30 * time.Second):
 		foundCorruptIncident = false
@@ -365,4 +348,505 @@ func TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding(t *testing.T
 	}
 
 	testutils.LogInfo(t, "✅ Integration test passed: Corrupt FSM & Sharding verified against live Redis & Kafka")
+}
+
+func TestIntegration_Incident_KafkaPublishFailureRollback(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
+	defer rClient.Close()
+
+	// 1. Target CP node "cp-b"
+	targetCP := "cp-b"
+	workerID := testutil.GetWorkerForCP(t, targetCP, []string{"cp-a", "cp-b"})
+
+	// Connect directly to the global test cluster
+	var client aegisv1.ControlPlaneTelemetryClient
+	for _, c := range globalClients {
+		if c != nil {
+			client = c // We can use any client as it routes
+			break
+		}
+	}
+	if client == nil {
+		t.Fatal("no active CP client found")
+	}
+
+	// 2. Generate an oversized correlation ID (> 1.5MB) to pass through 10MB gRPC limit
+	// but fail Kafka's 1MB default message.max.bytes limit.
+	// This dynamically exploits the configured limits without fragility.
+	oversizedString := strings.Repeat("A", 1500000) // 1.5 MB
+
+	// Wait for the worker to heartbeat healthily to seed the node ring ownership.
+	// Not strictly required for synthetic failures but good for reliability.
+
+	// NOTE: We MUST configure the client to allow sending oversized messages as well!
+	// Wait, grpc.NewClient by default has unlimited Send limit?
+	// No, default Send limit is math.MaxInt32 (unlimited). Default Recv limit is 4MB.
+	stream, err := client.StreamTelemetry(ctx)
+	if err != nil {
+		t.Fatalf("failed to open stream: %v", err)
+	}
+
+	err = stream.Send(&aegisv1.AgentTelemetry{
+		WorkerId:         workerID,
+		Timestamp:        time.Now().UTC().Format(time.RFC3339Nano),
+		SyntheticFailure: "synthetic_test_flag",
+		CorrelationId:    oversizedString, // Trigger Kafka rejection
+	})
+	if err != nil {
+		t.Fatalf("failed to send oversized telemetry over gRPC: %v", err)
+	}
+
+	_ = stream.CloseSend()
+
+	// We expect to eventually receive an error on the stream due to the Kafka publish failure.
+	recvErrChan := make(chan error, 1)
+	go func() {
+		for {
+			_, err := stream.Recv()
+			if err != nil {
+				recvErrChan <- err
+				return
+			}
+		}
+	}()
+
+	select {
+	case err := <-recvErrChan:
+		testutils.LogInfo(t, "Received expected gRPC error due to Kafka rejection: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for gRPC error from Kafka rejection")
+	}
+
+	// 3. Verify Redis FSM Rollback
+	// Because the Kafka publish failed, the manager's deferred rollback should have fired
+	// and deleted the state (since it was HEALTHY before).
+	ws, _ := getWorkerState(ctx, rClient, workerID, string(state.FailureSynthetic))
+	if ws != nil && ws.CurrentState != "" {
+		t.Fatalf("Expected Redis state to be rolled back (deleted/HEALTHY), but found leaked state: %s", ws.CurrentState)
+	}
+
+	testutils.LogInfo(t, "✅ Integration test passed: Kafka publish failure rolled back Redis FSM state properly")
+}
+
+func TestIntegration_Incident_CorruptFSM_RejectsValidTransitions(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
+
+	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
+	defer rClient.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
+	incidentID := "inc_corrupt_intg_1"
+	errType := string(state.FailureLatencySpike)
+
+	// 1. Manually insert Corrupt DLQ marker and current state in Redis
+	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	rClient.Set(ctx, markerKey, "illegal transition manually injected", 0)
+
+	ws := membership.WorkerState{
+		WorkerID:      workerID,
+		ErrorType:     errType,
+		IncidentID:    incidentID,
+		CurrentState:  string(state.WorkerPostmortemRequested),
+		CorrelationID: "corr-intg-123",
+	}
+	wsData, _ := json.Marshal(ws)
+	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	rClient.Set(ctx, stateKey, wsData, 0)
+
+	// 2. Publish a perfectly valid event to advance the FSM (PostmortemRequested -> PostmortemGenerated)
+	env := state.EventEnvelope{
+		EventType:     incident.TopicPostmortemGenerated,
+		IncidentID:    incidentID,
+		WorkerID:      workerID,
+		CorrelationID: "corr-intg-123",
+		Payload: map[string]any{
+			"failure_type": errType,
+		},
+	}
+	publishRawMessage(t, incident.TopicPostmortemGenerated, env)
+
+	// 3. Wait a moment for Kafka consumption
+	time.Sleep(2 * time.Second)
+
+	// 4. Verify that the FSM was frozen and the transition dropped
+	frozenState, err := getWorkerState(ctx, rClient, workerID, errType)
+	if err != nil {
+		t.Fatalf("failed to read frozen state: %v", err)
+	}
+	if frozenState.CurrentState != string(state.WorkerPostmortemRequested) {
+		t.Fatalf("Expected FSM to be frozen at %s, but got %s", state.WorkerPostmortemRequested, frozenState.CurrentState)
+	}
+
+	testutils.LogInfo(t, "✅ Integration test passed: Corrupt FSM successfully rejected valid Kafka transition")
+}
+
+func TestIntegration_Incident_FSMOutOfOrderDeferral(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
+	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
+	defer rClient.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
+	incidentID := "inc_outoforder_123"
+	errType := string(state.FailureSynthetic)
+
+	// 1. Seed state as POSTMORTEM_REQUESTED
+	ws := membership.WorkerState{
+		WorkerID:      workerID,
+		ErrorType:     errType,
+		IncidentID:    incidentID,
+		CurrentState:  string(state.WorkerPostmortemRequested),
+		CorrelationID: "corr-fsm-outoforder",
+		UpdatedAt:     time.Now().UTC(),
+	}
+	wsData, _ := json.Marshal(ws)
+	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	rClient.Set(ctx, stateKey, wsData, 0)
+
+	testutils.LogInfo(t, "📖 Publishing early DELIVERED event...")
+	// 2. Publish DELIVERED event EARLY
+	payload := map[string]interface{}{
+		"incident_id":    incidentID,
+		"sink":           "file",
+		"status":         "delivered",
+		"correlation_id": "corr-fsm-outoforder",
+	}
+	publishRawMessage(t, incident.TopicDeliveryStatus, payload)
+
+	// Verify deferred event exists in Redis with retry (asynchronous Kafka processing)
+	deferKey := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
+	deferredFound := false
+	for i := 0; i < 50; i++ { // wait up to 10s
+		if _, err := rClient.Get(ctx, deferKey).Result(); err == nil {
+			deferredFound = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if !deferredFound {
+		t.Fatalf("Expected early DELIVERED event to be deferred in Redis, but got error: redis: nil")
+	}
+
+	// Verify state is still POSTMORTEM_REQUESTED (event was deferred, not processed or corrupted)
+	currState, err := getWorkerState(ctx, rClient, workerID, errType)
+	if err != nil || currState.CurrentState != string(state.WorkerPostmortemRequested) {
+		t.Fatalf("Expected state to remain POSTMORTEM_REQUESTED after early DELIVERED, got: %s", currState.CurrentState)
+	}
+	
+	// Verify DLQ marker does not exist
+	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	if _, err := rClient.Get(ctx, markerKey).Result(); err != redis.Nil {
+		t.Fatalf("Expected no DLQ marker, but FSM was corrupted by early DELIVERED event")
+	}
+
+	testutils.LogInfo(t, "📖 Publishing slow POSTMORTEM_GENERATED event...")
+	// 3. Publish GENERATED event
+	env := state.EventEnvelope{
+		EventID:       fmt.Sprintf("evt-%d", time.Now().UnixNano()),
+		EventType:     incident.TopicPostmortemGenerated,
+		IncidentID:    incidentID,
+		WorkerID:      workerID,
+		Timestamp:     time.Now().UTC(),
+		CorrelationID: "corr-fsm-outoforder",
+		Payload: map[string]interface{}{
+			"failure_type": errType,
+		},
+	}
+	publishRawMessage(t, incident.TopicPostmortemGenerated, env)
+
+	// 4. Wait and verify it fast-forwarded all the way to DELIVERED
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		currState, _ := getWorkerState(ctx, rClient, workerID, errType)
+		if currState != nil && currState.CurrentState == string(state.WorkerDelivered) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	currState, _ = getWorkerState(ctx, rClient, workerID, errType)
+	if currState == nil || currState.CurrentState != string(state.WorkerDelivered) {
+		t.Fatalf("Expected state to fast-forward to DELIVERED using deferred event, got: %v", currState)
+	}
+
+	testutils.LogInfo(t, "✅ Integration test passed: FSM correctly deferred out-of-order events without corruption")
+}
+
+func TestIntegration_Incident_FSMDeferredEventTimeout(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
+	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
+	defer rClient.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
+	incidentID := "inc_defer_timeout_123"
+	errType := string(state.FailureSynthetic)
+
+	testutils.LogInfo(t, "📖 Starting Kafka readers for DLQ topic...")
+	foundCh := waitForDLQEvent(incident.TopicCorruptFSMDLQ, func(env state.EventEnvelope) bool {
+		return env.WorkerID == workerID && env.EventType == "aegis.cp.fsm_illegal_transition"
+	})
+
+	time.Sleep(1 * time.Second)
+
+	// 1. Seed state as POSTMORTEM_REQUESTED
+	ws := membership.WorkerState{
+		WorkerID:      workerID,
+		ErrorType:     errType,
+		IncidentID:    incidentID,
+		CurrentState:  string(state.WorkerPostmortemRequested),
+		CorrelationID: "corr-fsm-defertimeout",
+		UpdatedAt:     time.Now().UTC(),
+	}
+	wsData, _ := json.Marshal(ws)
+	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	rClient.Set(ctx, stateKey, wsData, 0)
+
+	// Give the watchdog time to sync
+	time.Sleep(2 * time.Second)
+
+	// 2. Insert a deferred event that is expiring
+	// The watchdog scans for TTL < 2 minutes (120s)
+	simulatedTTL := 2 * time.Second
+	deferKey := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
+	rClient.Set(ctx, deferKey, "{}", simulatedTTL)
+
+	testutils.LogInfo(t, "📖 Verifying Watchdog published corrupt FSM event due to deferral timeout...")
+
+	foundTimeoutIncident := false
+	select {
+	case <-foundCh:
+		foundTimeoutIncident = true
+	case <-time.After(simulatedTTL + (5 * time.Second)):
+		foundTimeoutIncident = false
+	}
+
+	if !foundTimeoutIncident {
+		t.Fatalf("Watchdog failed to publish corrupt FSM event for expired deferral")
+	}
+
+	// 3. Verify DLQ marker exists
+	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	_, err := rClient.Get(ctx, markerKey).Result()
+	if err != nil {
+		t.Fatalf("Expected DLQ marker in Redis due to deferral timeout, but got error: %v", err)
+	}
+
+	testutils.LogInfo(t, "✅ Integration test passed: Watchdog correctly marked expired deferral as corrupt FSM")
+}
+
+func TestIntegration_Incident_FSMConsumerChecksStaleEvents_And_SkipsIfAlreadyHealthyOrResolved(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
+	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
+	defer rClient.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
+	newIncidentID := "inc_new_123"
+	oldIncidentID := "inc_old_999"
+	errType := string(state.FailureSynthetic)
+
+	// 1. Seed state as SUSPECTED with new incident ID
+	ws := membership.WorkerState{
+		WorkerID:      workerID,
+		ErrorType:     errType,
+		IncidentID:    newIncidentID,
+		CurrentState:  string(state.WorkerPostmortemRequested),
+		CorrelationID: "corr-fsm-stale",
+		UpdatedAt:     time.Now().UTC(),
+	}
+	wsData, _ := json.Marshal(ws)
+	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	rClient.Set(ctx, stateKey, wsData, 0)
+	time.Sleep(2 * time.Second)
+
+	// 2. Publish a stale event (PostmortemGenerated) for OLD incident
+	pClient := &segmentiokafka.Writer{
+		Addr:     segmentiokafka.TCP(testutils.DefaultKafkaBrokers...),
+		Topic:    incident.TopicPostmortemGenerated,
+		Balancer: &segmentiokafka.LeastBytes{},
+	}
+	defer pClient.Close()
+
+	env := state.EventEnvelope{
+		EventType:     incident.TopicPostmortemGenerated,
+		IncidentID:    oldIncidentID,
+		WorkerID:      workerID,
+		CorrelationID: "corr-fsm-stale",
+		Payload: map[string]any{
+			"failure_type": errType,
+		},
+	}
+	envData, _ := json.Marshal(env)
+
+	err := pClient.WriteMessages(ctx, segmentiokafka.Message{
+		Key:   []byte(fmt.Sprintf("%s:%s", workerID, errType)),
+		Value: envData,
+	})
+	if err != nil {
+		t.Fatalf("failed to publish stale event: %v", err)
+	}
+
+	// Wait to see if it processes
+	time.Sleep(3 * time.Second)
+
+	// 3. Verify state did NOT change
+	currState, err := getWorkerState(ctx, rClient, workerID, errType)
+	if err != nil {
+		t.Fatalf("Failed to get state: %v", err)
+	}
+	if currState.CurrentState != string(state.WorkerPostmortemRequested) {
+		t.Fatalf("Expected state to remain POSTMORTEM_REQUESTED, but got: %s", currState.CurrentState)
+	}
+	if currState.IncidentID != newIncidentID {
+		t.Fatalf("Expected incident ID to remain %s, but got: %s", newIncidentID, currState.IncidentID)
+	}
+
+	// 4. Publish the EXACT SAME event, but with the CURRENT incident ID (Valid)
+	env.IncidentID = newIncidentID
+	envDataValid, _ := json.Marshal(env)
+	err = pClient.WriteMessages(ctx, segmentiokafka.Message{
+		Key:   []byte(fmt.Sprintf("%s:%s", workerID, errType)),
+		Value: envDataValid,
+	})
+	if err != nil {
+		t.Fatalf("failed to publish valid event: %v", err)
+	}
+
+	// Wait for processing
+	time.Sleep(3 * time.Second)
+
+	// 5. Verify state DID change, proving the event payload was valid and only rejected earlier due to IsStale
+	currState, err = getWorkerState(ctx, rClient, workerID, errType)
+	if err != nil {
+		t.Fatalf("Failed to get state: %v", err)
+	}
+	if currState.CurrentState == string(state.WorkerPostmortemRequested) {
+		t.Fatalf("Expected state to transition out of POSTMORTEM_REQUESTED upon receiving a valid event, but it did not. This means the event processing logic is broken, and the previous stale check success was a false positive.")
+	}
+
+	// 6. Forcefully set the state to RESOLVED (simulating aegis-cli --force)
+	currState.CurrentState = string(state.WorkerResolved)
+	wsDataResolved, _ := json.Marshal(currState)
+	rClient.Set(ctx, stateKey, wsDataResolved, 0)
+	time.Sleep(1 * time.Second)
+
+	// 7. Publish a late PostmortemGenerated event with the VALID current incident ID
+	env.CorrelationID = "corr-late-postmortem"
+	envDataLate, _ := json.Marshal(env)
+	err = pClient.WriteMessages(ctx, segmentiokafka.Message{
+		Key:   []byte(fmt.Sprintf("%s:%s", workerID, errType)),
+		Value: envDataLate,
+	})
+	if err != nil {
+		t.Fatalf("failed to publish late event: %v", err)
+	}
+
+	// 8. Wait for processing
+	time.Sleep(3 * time.Second)
+
+	// 9. Verify state remains RESOLVED and NO corruption (DLQ marker) occurred
+	currStateAfter, err := getWorkerState(ctx, rClient, workerID, errType)
+	if err != nil {
+		t.Fatalf("Failed to get state after late event: %v", err)
+	}
+	if currStateAfter.CurrentState != string(state.WorkerResolved) {
+		t.Fatalf("Expected state to remain RESOLVED, but got: %s", currStateAfter.CurrentState)
+	}
+
+	// Check if a DLQ marker was created (corruption)
+	dlqMarker, err := rClient.Get(ctx, fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)).Result()
+	if err == nil && dlqMarker != "" {
+		t.Fatalf("Expected NO DLQ marker, but found corruption marker: %s", dlqMarker)
+	}
+
+	testutils.LogInfo(t, "✅ Integration test passed: Consumer correctly ignored stale Kafka event, accepted valid one, and gracefully skipped late event after manual resolution")
+}
+
+func TestIntegration_Incident_WatchdogChecksStaleDeferral(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
+	rClient := redis.NewClient(&redis.Options{Addr: testutils.DefaultRedisAddr})
+	defer rClient.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
+	newIncidentID := "inc_new_123"
+	oldIncidentID := "inc_old_999"
+	errType := string(state.FailureSynthetic)
+
+	// 1. Seed state as SUSPECTED with NEW incident ID
+	ws := membership.WorkerState{
+		WorkerID:      workerID,
+		ErrorType:     errType,
+		IncidentID:    newIncidentID,
+		CurrentState:  string(state.WorkerSuspected),
+		CorrelationID: "corr-watchdog-stale",
+		UpdatedAt:     time.Now().UTC(),
+	}
+	wsData, _ := json.Marshal(ws)
+	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	rClient.Set(ctx, stateKey, wsData, 0)
+	time.Sleep(2 * time.Second)
+
+	// 2. Insert a deferred event that is expiring, but for the OLD incident ID
+	simulatedTTL := 2 * time.Second
+	deferKey := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
+	
+	// Payload for old incident
+	defPayload := map[string]any{
+		"incident_id": oldIncidentID,
+		"status":      "delivered",
+	}
+	defData, _ := json.Marshal(defPayload)
+	rClient.Set(ctx, deferKey, defData, simulatedTTL)
+
+	// Wait for watchdog to process the expiring deferral
+	time.Sleep(simulatedTTL + (3 * time.Second))
+
+	// 3. Verify deferral was DELETED, but FSM state was NOT marked as corrupt
+	// Check deferral is gone
+	_, err := rClient.Get(ctx, deferKey).Result()
+	if err == nil {
+		t.Fatalf("Expected stale deferral to be deleted, but it still exists")
+	}
+
+	// Check state is still SUSPECTED
+	currState, err := getWorkerState(ctx, rClient, workerID, errType)
+	if err != nil {
+		t.Fatalf("Failed to get state: %v", err)
+	}
+	if currState.CurrentState != string(state.WorkerSuspected) {
+		t.Fatalf("Expected state to remain SUSPECTED, but got: %s (Watchdog mistakenly corrupted it?)", currState.CurrentState)
+	}
+
+	// 4. Insert the EXACT SAME deferred event, but with the CURRENT incident ID (Valid)
+	defPayloadValid := map[string]any{
+		"incident_id": newIncidentID,
+		"status":      "delivered",
+	}
+	defDataValid, _ := json.Marshal(defPayloadValid)
+	rClient.Set(ctx, deferKey, defDataValid, simulatedTTL)
+
+	// Wait for watchdog to process the valid expiring deferral
+	time.Sleep(simulatedTTL + (5 * time.Second))
+
+	// 5. Verify state was marked as corrupt (DLQ marker created), proving the watchdog logic works and only rejected earlier due to IsStale
+	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	_, err = rClient.Get(ctx, markerKey).Result()
+	if err != nil {
+		t.Fatalf("Expected DLQ marker to be created upon expiring a valid deferral, but it was not (err: %v). This means watchdog processing is broken, and the previous stale check success was a false positive.", err)
+	}
+
+	testutils.LogInfo(t, "✅ Integration test passed: Watchdog correctly ignored stale expiring deferral but reacted to valid one")
 }

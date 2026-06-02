@@ -5,7 +5,9 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+COPY gen ./gen
+COPY services/sink ./services/sink
+COPY services/pkg ./services/pkg
 # Build the sink binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /bin/aegis-sink ./services/sink
 

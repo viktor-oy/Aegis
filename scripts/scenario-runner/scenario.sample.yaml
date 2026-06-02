@@ -1,0 +1,81 @@
+name: "Sample Scenario Configuration"
+cluster:
+  config:
+    # Optional: override environment variables via Kustomize Strategic Merge Patch
+    env_overrides:
+      - target: "DaemonSet/aegis-agent"
+        envs:
+          AEGIS_HEARTBEAT_INTERVAL_SECONDS: "6"
+      - target: "StatefulSet/aegis-control-plane"
+        envs:
+          AEGIS_HEARTBEAT_EXPIRY_SECONDS: "10"
+          AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS: "10"
+          AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS: "20"
+  resources:
+    node:
+      count: <int>
+    cp:
+      count: <int>
+    sink:
+      count: <int>
+    composer:
+      count: <int>
+
+chain:
+  # Universal Stage Options (applicable to any action):
+  # continue_on_err: <boolean> # Optional, defaults to false. If true, failure of this stage will not abort the scenario.
+  # always_run: <boolean>      # Optional, defaults to false. If true, this stage will execute even if a previous stage failed and the scenario is aborting. Useful for cleanup.
+  # always_run_depends_on: "<string>" # Optional. If always_run is true, this stage will only execute if the stage with the specified stage_id was executed.
+
+  - action: print
+    message: "<string>" # e.g. "Starting the scenario..."
+    color: "<string>" # Optional: black, red, green, yellow, blue, magenta, cyan, white
+
+  - action: wait
+    delay_seconds: <int>
+
+  - action: pause
+    message: "<string>" # e.g. "Scenario paused. Press Enter to continue..."
+    color: "<string>" # Optional: black, red, green, yellow, blue, magenta, cyan, white
+
+  - action: inject_fault
+    mode: "<string>" # e.g. "latency_spike", "missed_heartbeat", "vram_pressure", "normal"
+    target_count: <int>
+    stage_id: "<string>" # Optional, allows tracking which pods were targeted so later stages can target them again
+    target_ref_id: "<string>" # Optional, uses the exact pods from a previous stage_id instead of random selection
+    correlation_id_prefix: "<string>" # Optional
+    wait_for_fsm_creation_timeout_ms: <int> # Optional, timeout in milliseconds to wait for the CP to natively detect and create the FSM state in Redis
+
+  - action: wait_for_fsm_state
+    target_ref_id: "<string>" # Required. Targets from a previous stage_id
+    error_type: "<string>" # e.g. "latency_spike"
+    expected_state: "<string>" # e.g. "DELIVERED", "RESOLVED"
+    timeout_ms: <int> # Optional, timeout in milliseconds to wait
+
+  - action: kafka_produce_message
+    topic: "<string>" # e.g. "aegis.postmortem.delivery.status"
+    target_ref_id: "<string>" # Required. Targets from a previous stage_id where correlation_id was saved
+    inject_incident_id: <boolean> # Optional, dynamically fetches the incident_id from Redis and injects it into the payload
+    wait_for_fsm_creation_timeout_ms: <int> # Optional, timeout in milliseconds to wait for the incident to be created when inject_incident_id is true
+    error_type: "<string>" # Optional, required if inject_incident_id is true to find the state in Redis
+    payload: # Optional, arbitrary JSON payload
+      <key>: "<value>"
+
+  - action: aegis-cli
+    error_type: "<string>" # e.g. "latency_spike"
+    target_ref_id: "<string>" # Targets from a previous stage_id where correlation_id was saved
+    args: ["<string>"] # e.g. ["--force", "--fix-corrupt-fsm", "--state", "HEALTHY", "--yes"]
+
+  - action: kubectl_scale
+    deployment: "<string>" # e.g. "aegis-control-plane"
+    replicas: <int> # e.g. 0
+
+  - action: suspend_workload
+    workload: "<string>" # e.g. "DaemonSet/aegis-agent"
+    replicas: <int> # The number of pods to KEEP running. For DaemonSets in Kind clusters (if node count > 1): actual agents = (total nodes - 1 control plane node). So if config has 3 nodes, there are 2 agents. Setting replicas to 1 here suspends exactly 1 agent.
+    target_ref_id: "<string>" # Targets a specific pod from a previous stage
+    stage_id: "<string>" # Optional ID to reference this target later
+
+  - action: resume_workload
+    workload: "<string>" # e.g. "DaemonSet/aegis-agent"
+    replicas: <int> # Number of pods to scale back up to (should match total active agents, e.g. 2)

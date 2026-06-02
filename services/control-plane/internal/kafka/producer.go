@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"net"
 
 	"time"
 
@@ -16,8 +17,19 @@ type KafkaPublisher struct {
 }
 
 func NewKafkaPublisher(brokers []string) *KafkaPublisher {
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		DualStack: true,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &kafka.Transport{
+		Dial: dialer.DialContext,
+	}
+
 	writer := &kafka.Writer{
 		Addr:                   kafka.TCP(brokers...),
+		Transport:              transport,
 		Balancer:               &kafka.Hash{},
 		RequiredAcks:           kafka.RequireOne,
 		AllowAutoTopicCreation: false,

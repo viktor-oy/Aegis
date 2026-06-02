@@ -6,18 +6,19 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from typing import Any, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from .llm_client import InferenceConfig, OpenAICompatibleInferenceClient
 from .service import ComposerService
 
-logger = logging.getLogger(__name__)
+from services.pkg.pylogger.logger import logger
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from .kafka_app import run_from_env
     task = asyncio.create_task(run_from_env())
+    app.state.kafka_task = task
     yield
     task.cancel()
     with suppress(asyncio.CancelledError):
@@ -52,6 +53,15 @@ def get_composer_service() -> ComposerService:
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    task = getattr(app.state, "kafka_task", None)
+    if task is not None and task.done():
+        if task.cancelled():
+            raise HTTPException(status_code=503, detail="Kafka consumer loop cancelled")
+        elif task.exception():
+            logger.error(f"Kafka loop crashed: {task.exception()}", extra={"component": "API_HEALTH", "event": "KAFKA_LOOP_CRASHED", "error": str(task.exception())})
+            raise HTTPException(status_code=503, detail=f"Kafka loop crashed: {task.exception()}")
+        else:
+            raise HTTPException(status_code=503, detail="Kafka loop finished unexpectedly")
     return {"status": "ok"}
 
 
@@ -59,7 +69,7 @@ def health() -> dict[str, str]:
 async def compose_postmortem(req: ComposeRequest) -> ComposeResponse:
     logger.info(
         "Received synchronous compose request",
-        extra={"incident_id": req.diagnostic_event.get("incident_id")},
+        extra={"component": "API", "event": "COMPOSE_REQUEST", "incident_id": req.diagnostic_event.get("incident_id")},
     )
     service = get_composer_service()
     generated = await service.compose(req.diagnostic_event, req.guidance)

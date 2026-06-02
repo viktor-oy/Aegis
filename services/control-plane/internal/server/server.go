@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -72,14 +73,14 @@ func (cp *ControlPlane) currentRing() RingProvider {
 
 func (cp *ControlPlane) Ingest(ctx context.Context, sample state.TelemetrySample) (Directive, error) {
 	if err := ctx.Err(); err != nil {
-		slog.Warn("ingest context canceled", "worker", sample.WorkerID, "error", err)
+		slog.Warn("ingest context canceled", "component", "GRPC_SERVER", "event", "INGEST_CANCEL", "worker_id", sample.WorkerID, "error", err)
 		return Directive{}, err
 	}
 
 	ring := cp.currentRing()
 	owner, ok := ring.Owner(sample.WorkerID)
 	if ok && owner.ID != cp.id {
-		slog.Info("redirecting worker", "worker", sample.WorkerID, "from", cp.id, "to", owner.ID, "hint", owner.Address)
+		slog.Info("redirecting worker", "component", "GRPC_SERVER", "event", "WORKER_REDIRECT", "worker_id", sample.WorkerID, "from", cp.id, "to", owner.ID, "hint", owner.Address)
 		return Directive{
 			Type:          "redirect",
 			OwnerHint:     owner.Address,
@@ -90,10 +91,10 @@ func (cp *ControlPlane) Ingest(ctx context.Context, sample state.TelemetrySample
 
 	select {
 	case cp.queue <- sample:
-		slog.Debug("telemetry accepted and queued", "worker", sample.WorkerID, "correlation", sample.CorrelationID)
+		slog.Debug("telemetry accepted and queued", "component", "GRPC_SERVER", "event", "TELEMETRY_QUEUED", "worker_id", sample.WorkerID, "corr_id", sample.CorrelationID, "error_type", sample.SyntheticFailureFlag)
 		return Directive{Type: "accepted", CorrelationID: sample.CorrelationID}, nil
 	default:
-		slog.Warn("ingest queue exhausted", "worker", sample.WorkerID)
+		slog.Warn("ingest queue exhausted", "component", "GRPC_SERVER", "event", "QUEUE_EXHAUSTED", "worker_id", sample.WorkerID)
 		return Directive{}, ErrResourceExhausted
 	}
 }
@@ -104,16 +105,16 @@ func (cp *ControlPlane) ProcessOne(ctx context.Context) (bool, error) {
 		cp.tracker.Observe(sample.WorkerID, sample.Timestamp)
 		result, detected := cp.addAndEvaluate(sample)
 		if detected {
-			slog.Warn("failure detected for worker", "worker", sample.WorkerID, "reason", result.Reason)
+			slog.Warn("failure detected for worker", "component", "GRPC_SERVER", "event", "AGENT_FAILURE_DETECTED", "worker_id", sample.WorkerID, "reason", result.Reason)
 			_, _, err := cp.manager.HandleDetection(ctx, result)
 			if err != nil {
-				slog.Error("failed to handle detection", "worker", sample.WorkerID, "error", err)
+				return true, fmt.Errorf("failed to handle detection for worker %s: %w", sample.WorkerID, err)
 			}
-			return true, err
+			return true, nil
 		}
 		return true, nil
 	case <-ctx.Done():
-		slog.Debug("processing loop context canceled")
+		slog.Debug("processing loop context canceled", "component", "GRPC_SERVER", "event", "PROCESS_CANCEL")
 		return false, ctx.Err()
 	default:
 		return false, nil
@@ -153,5 +154,9 @@ func (cp *ControlPlane) addAndEvaluate(sample state.TelemetrySample) (state.Dete
 		window = detection.NewWindow(cp.rules)
 		cp.windows[sample.WorkerID] = window
 	}
-	return window.Add(sample)
+	result, detected := window.Add(sample)
+	if detected {
+		window.Clear()
+	}
+	return result, detected
 }

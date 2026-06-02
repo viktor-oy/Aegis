@@ -1,0 +1,119 @@
+name: "FSM Corruption and SRE Resolution Workflow"
+cluster:
+  resources:
+    # IMPORTANT NOTE: if count is modified, then ensure various replicas field below are correct
+    cp:
+      count: 3
+    node:
+      # determines Agent(daemonset) worker count
+      count: 3
+    sink:
+      count: 2
+    composer:
+      count: 2
+  config:
+    env_overrides:
+      - target: "DaemonSet/aegis-agent"
+        envs:
+          AEGIS_HEARTBEAT_INTERVAL_SECONDS: "6"
+      - target: "StatefulSet/aegis-control-plane"
+        envs:
+          AEGIS_HEARTBEAT_EXPIRY_SECONDS: "12"
+          AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS: "5"
+          AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS: "2"
+          # wait stage(wait_for_deferral_expiration_1) must wait for a time greater than this, to allow the watchdog to detect the corrupted DLQ marker.
+          AEGIS_FSM_DEFERRAL_TTL_SECONDS: "15"
+
+          # Tolerance must ALWAYS be > AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS so the owner CP doesn't sleep through the tolerance window!
+          # Effective wait before watchdog marks FSM for corruption = TTL - Tolerance
+          AEGIS_FSM_DEFERRAL_TOLERANCE_SECONDS: "6"
+chain:
+  - action: "print"
+    message: "Scaling down aegis-composer to pause postmortem generation..."
+
+  - action: "print"
+    message: "By scaling composer to zero, we know the FSM state will pause at DIAGNOSTICS_COLLECTED. This will deterministically make our next step of publishing a forged 'delivered' message cause an FSM corruption, because it is not an event composer will publish hence an unexpected state jump!"
+
+  - action: "kubectl_scale"
+    stage_id: "scale_composer_0"
+    deployment: "aegis-composer"
+    replicas: 0
+
+  - action: "print"
+    message: "Injecting latency spike to trigger an incident and waiting for FSM to be initialized..."
+
+  - action: "inject_fault"
+    mode: "latency_spike"
+    target_count: 1
+    stage_id: "latency_fault_1"
+    correlation_id_prefix: "scenario-latency"
+    wait_for_fsm_creation_timeout_ms: 45000
+
+  - action: "print"
+    message: "Restoring agent to normal state..."
+
+  - action: "inject_fault"
+    target_ref_id: "latency_fault_1"
+    mode: "normal"
+    always_run: true
+    always_run_depends_on: "latency_fault_1"
+    continue_on_err: true
+
+  - action: "print"
+    message: "Forging delivery success message to trick CP into advancing the FSM to DELIVERED while Composer hasnt started processing which creates an illegal state transition..."
+
+  - action: "kafka_produce_message"
+    topic: "aegis.postmortem.delivery.status"
+    target_ref_id: "latency_fault_1"
+    inject_incident_id: true
+    error_type: "latency_spike"
+    payload:
+      status: "delivered"
+
+  # wait is needed so that scenario observer wont progress the scenario too early before corruption actually happens
+
+  # Aegis considers "aegis.postmortem.delivery.status"(forged to cause an FSM corruption) event as probably an out of order event because due to aegis services pipeline structure, 
+  # the FSM expects "aegis.postmortem.generated" before "aegis.postmortem.delivery.status" but due to distributed system 
+  # jitter "aegis.postmortem.delivery.status" could arrive first.
+  # This makes the CP defer the delivery event processing, choosing patience to avoid an unnecessary illegal state transition which causes FSM corruption. 
+  # We must wait longer than AEGIS_FSM_DEFERRAL_TTL_SECONDS (specified above) to allow the deferral 
+  # to expire so the Watchdog neutralizes it and marks the FSM as corrupt, BEFORE Composer is scaled back up.
+  - action: "wait"
+    stage_id: "wait_for_deferral_expiration_1"
+    delay_seconds: 12
+    reason: "Allow the watchdog to detect the corrupted DLQ marker"
+
+  # NOTE: If the Control Plane restarts (e.g. due to file changes via Tilt) during the above wait, 
+  # this scenario might fail to demonstrate corruption. The CP would come back online, read the 
+  # forged message and Composer's postmortem generated event concurrently, and FSM could progress naturally because the composer event wins the concurrency race.
+  - action: "pause"
+    color: "green"
+    message: "Check Tilt UI! You should see a new FSM started, progresses through to event deferral and then eventually a watchdog FSM corruption(CORRUPT_FSM) alert log."
+    show_urls_with_regex: '(?!.*\[KAFKA_RECEIVE|.*\[KAFKA_RAW|.*\[DEFERRALS_SCANNED).*?(FSM|latency_spike|Watchdog|incident|DLQ|deferred|resolved)'
+
+  - action: "print"
+    message: "Scaling aegis-composer back up..."
+
+  - action: "kubectl_scale"
+    deployment: "aegis-composer"
+    replicas: 2
+    always_run: true
+    always_run_depends_on: "scale_composer_0"
+    continue_on_err: true
+
+  - action: "pause"
+    color: "yellow"
+    message: "Press Enter to attempt resolution with aegis-cli..."
+
+  - action: "print"
+    message: "Running SRE-CLI to resolve the corrupt FSM state..."
+
+  - action: "aegis-cli"
+    error_type: "latency_spike"
+    target_ref_id: "latency_fault_1"
+    args:
+      - "--fix-corrupt-fsm"
+
+  - action: "pause"
+    color: "green"
+    message: "Resolution complete. Incident should now be healthy in Tilt. Press Enter to finish."

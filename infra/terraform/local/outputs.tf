@@ -1,4 +1,4 @@
 output "namespace" {
-  value       = kubernetes_namespace.aegis_system.metadata[0].name
+  value       = "aegis-system"
   description = "The namespace created for Aegis"
 }

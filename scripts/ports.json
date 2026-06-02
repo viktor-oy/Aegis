@@ -1,0 +1,29 @@
+{
+    "local": {
+        "tilt": 10350,
+        "kafka_bootstrap": 39092,
+        "kafka_brokers": [30090, 30091, 30092],
+        "redis": 36379,
+        "llm": 31434,
+        "mailpit_smtp": 30250,
+        "mailpit_http": 38025
+    },
+    "intg-test": {
+        "tilt": 10352,
+        "kafka_bootstrap": 39093,
+        "kafka_brokers": [30094, 30095, 30096],
+        "redis": 36380,
+        "llm": 31435,
+        "mailpit_smtp": 30251,
+        "mailpit_http": 38026
+    },
+    "scenario": {
+        "tilt": 10354,
+        "kafka_bootstrap": 39094,
+        "kafka_brokers": [30098, 30099, 30100],
+        "redis": 36381,
+        "llm": 31436,
+        "mailpit_smtp": 30252,
+        "mailpit_http": 38027
+    }
+}

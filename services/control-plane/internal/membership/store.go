@@ -20,8 +20,8 @@ type Store interface {
 	Register(ctx context.Context, member hashring.Member, ttl time.Duration, now time.Time) error
 	Refresh(ctx context.Context, member hashring.Member, ttl time.Duration, now time.Time) error
 	ActiveMembers(ctx context.Context, now time.Time) ([]hashring.Member, error)
-	AcquireIncidentLock(ctx context.Context, workerID string, incidentID string, ttl time.Duration, now time.Time) (bool, error)
-	ReleaseIncidentLock(ctx context.Context, workerID string, incidentID string) error
+	AcquireFSMLock(ctx context.Context, workerID string, errorType string, incidentID string, ttl time.Duration) (bool, error)
+	ReleaseFSMLock(ctx context.Context, workerID string, errorType string, incidentID string) error
 
 	SetWorkerState(ctx context.Context, state WorkerState) error
 	GetWorkerState(ctx context.Context, workerID string, errorType string) (*WorkerState, error)
@@ -32,4 +32,9 @@ type Store interface {
 	GetDLQMarker(ctx context.Context, workerID string, errorType string) (string, error)
 	DeleteDLQMarker(ctx context.Context, workerID string, errorType string) error
 	ListDLQMarkers(ctx context.Context) ([]string, error)
+
+	DeferEvent(ctx context.Context, workerID string, errorType string, eventType string, payload []byte, ttl time.Duration) error
+	GetDeferredEvent(ctx context.Context, workerID string, errorType string, eventType string) ([]byte, error)
+	DeleteDeferredEvent(ctx context.Context, workerID string, errorType string, eventType string) error
+	ScanExpiringDeferredEvents(ctx context.Context, tolerance time.Duration) ([]WorkerState, error)
 }

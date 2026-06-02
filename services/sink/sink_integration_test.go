@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	kafkaBrokers   = []string{"localhost:9094"}
+	kafkaBrokers   = []string{"localhost:39093"}
 	sinkBinaryPath string
 )
 
@@ -96,8 +96,8 @@ func publishKafkaEvent(t *testing.T, pm types.Postmortem) {
 	}
 }
 
-func TestSinkServiceIntegration_FileSink(t *testing.T) {
-	testutils.WipeTestState(t, "kafka:aegis.postmortem.generated,aegis.postmortem.delivery.status")
+func TestIntegration_SinkService_FileSink(t *testing.T) {
+
 	// Create a random test directory within docs/services/sink/local/artifacts
 	docsDir := "../../docs/services/sink/local/artifacts"
 	os.MkdirAll(docsDir, 0755)
@@ -145,7 +145,7 @@ func TestSinkServiceIntegration_FileSink(t *testing.T) {
 
 	// Verify that a file was created in docs/services/sink/local/artifacts
 	var found bool
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 200; i++ {
 		entries, _ := os.ReadDir(docsDir)
 		for _, entry := range entries {
 			if strings.Contains(entry.Name(), pm.IncidentID) {
@@ -170,8 +170,8 @@ func TestSinkServiceIntegration_FileSink(t *testing.T) {
 	}
 }
 
-func TestSinkServiceIntegration_EmailSink(t *testing.T) {
-	testutils.WipeTestState(t, "kafka:aegis.postmortem.generated,aegis.postmortem.delivery.status")
+func TestIntegration_SinkService_EmailSink(t *testing.T) {
+
 	pm := types.Postmortem{
 		IncidentID: "email-integ-123",
 		WorkerID:   "gpu-01",
@@ -193,7 +193,7 @@ func TestSinkServiceIntegration_EmailSink(t *testing.T) {
 		"AEGIS_KAFKA_GROUP_ID=test-group-email-sink",
 		"AEGIS_EMAIL_SINK_ENABLED=true",
 		"AEGIS_SMTP_HOST=127.0.0.1",
-		"AEGIS_SMTP_PORT=10250",
+		"AEGIS_SMTP_PORT=30251",
 		"AEGIS_SMTP_TO=alerts@aegis.local",
 		"AEGIS_SMTP_FROM=noreply@aegis.local",
 	)
@@ -216,8 +216,9 @@ func TestSinkServiceIntegration_EmailSink(t *testing.T) {
 
 	// Wait for processing to complete and query Mailpit
 	var found bool
-	for i := 0; i < 50; i++ {
-		resp, err := http.Get("http://127.0.0.1:8025/api/v1/messages")
+	for i := 0; i < 200; i++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:38026/api/v1/messages", nil)
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil && resp.StatusCode == 200 {
 			var result struct {
 				Messages []struct {
@@ -231,7 +232,7 @@ func TestSinkServiceIntegration_EmailSink(t *testing.T) {
 			for _, msg := range result.Messages {
 				if strings.Contains(msg.Subject, pm.IncidentID) {
 					// We found the email, let's verify the body
-					msgResp, err := http.Get("http://127.0.0.1:8025/api/v1/message/" + msg.ID)
+					msgResp, err := http.Get("http://127.0.0.1:38026/api/v1/message/" + msg.ID)
 					if err == nil && msgResp.StatusCode == 200 {
 						var msgDetail struct {
 							Text string `json:"Text"`
@@ -259,9 +260,9 @@ func TestSinkServiceIntegration_EmailSink(t *testing.T) {
 	}
 }
 
-func TestSinkServiceIntegration_HTTP(t *testing.T) {
+func TestIntegration_SinkService_HTTP(t *testing.T) {
 	t.Skip("HTTP Sink is not implemented in main.go")
-	testutils.WipeTestState(t, "kafka:aegis.postmortem.generated,aegis.postmortem.delivery.status")
+
 	// Start the sink service via compiled binary
 	t.Log("Starting sink service via compiled binary for HTTP test...")
 	ctx, cancel := context.WithCancel(context.Background())

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aegis/aegis/services/control-plane/internal/hashring"
@@ -79,8 +80,8 @@ else
 end
 `
 
-func (s *RedisStore) AcquireIncidentLock(ctx context.Context, workerID string, incidentID string, ttl time.Duration, now time.Time) (bool, error) {
-	key := "incident:lock:" + workerID
+func (s *RedisStore) AcquireFSMLock(ctx context.Context, workerID string, errorType string, incidentID string, ttl time.Duration) (bool, error) {
+	key := "aegis:fsm:lock:" + workerID + ":" + errorType
 	res, err := s.client.Eval(ctx, acquireLockScript, []string{key}, incidentID, ttl.Milliseconds()).Result()
 	if err != nil {
 		return false, err
@@ -100,8 +101,8 @@ else
 end
 `
 
-func (s *RedisStore) ReleaseIncidentLock(ctx context.Context, workerID string, incidentID string) error {
-	key := "incident:lock:" + workerID
+func (s *RedisStore) ReleaseFSMLock(ctx context.Context, workerID string, errorType string, incidentID string) error {
+	key := "aegis:fsm:lock:" + workerID + ":" + errorType
 	_, err := s.client.Eval(ctx, releaseLockScript, []string{key}, incidentID).Result()
 	return err
 }
@@ -116,6 +117,9 @@ func (s *RedisStore) SetWorkerState(ctx context.Context, state WorkerState) erro
 	return s.client.Set(ctx, key, data, 0).Err()
 }
 
+// GetWorkerState retrieves the FSM state. Redis must be the authoritative source of truth 
+// so that any CP replica can inherit the FSM if the original handling CP dies or the hash ring rebalances.
+// No CP should save or find worker/incident state locally in-memory.
 func (s *RedisStore) GetWorkerState(ctx context.Context, workerID string, errorType string) (*WorkerState, error) {
 	key := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errorType)
 	data, err := s.client.Get(ctx, key).Bytes()
@@ -187,4 +191,51 @@ func (s *RedisStore) ListDLQMarkers(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	return markers, nil
+}
+
+func (s *RedisStore) DeferEvent(ctx context.Context, workerID string, errorType string, eventType string, payload []byte, ttl time.Duration) error {
+	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	return s.client.Set(ctx, key, payload, ttl).Err()
+}
+
+func (s *RedisStore) GetDeferredEvent(ctx context.Context, workerID string, errorType string, eventType string) ([]byte, error) {
+	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	return data, err
+}
+
+func (s *RedisStore) DeleteDeferredEvent(ctx context.Context, workerID string, errorType string, eventType string) error {
+	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	return s.client.Del(ctx, key).Err()
+}
+
+func (s *RedisStore) ScanExpiringDeferredEvents(ctx context.Context, tolerance time.Duration) ([]WorkerState, error) {
+	var states []WorkerState
+	iter := s.client.Scan(ctx, 0, "aegis:defer:*", 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		ttl, err := s.client.TTL(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		
+		if ttl >= 0 && ttl < tolerance {
+			parts := strings.Split(key, ":")
+			if len(parts) >= 5 {
+				workerID := parts[2]
+				errorType := parts[3]
+				states = append(states, WorkerState{
+					WorkerID:  workerID,
+					ErrorType: errorType,
+				})
+			}
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	return states, nil
 }

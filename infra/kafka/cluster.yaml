@@ -4,4 +4,4 @@ meta:
   environment: dev
 spec:
   bootstrapAddrs:
-    - localhost:9094
+    - ${AEGIS_KAFKA_BROKER_ADDR}

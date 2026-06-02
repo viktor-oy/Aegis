@@ -39,6 +39,10 @@ func NewWindow(rules Rules) *Window {
 	return &Window{rules: rules}
 }
 
+func (w *Window) Clear() {
+	w.samples = nil
+}
+
 func (w *Window) Add(sample state.TelemetrySample) (state.DetectionResult, bool) {
 	w.samples = append(w.samples, sample)
 	limit := max(w.rules.SustainedSampleCount, 8)

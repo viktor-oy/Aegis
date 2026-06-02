@@ -1,0 +1,81 @@
+name: "Agent Fault Injection Scenario"
+
+cluster:
+  config:
+    env_overrides:
+      - target: "DaemonSet/aegis-agent"
+        envs:
+          AEGIS_HEARTBEAT_INTERVAL_SECONDS: "6"
+      - target: "StatefulSet/aegis-control-plane"
+        envs:
+          AEGIS_HEARTBEAT_EXPIRY_SECONDS: "12"
+          AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS: "15"
+          AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS: "45"
+          AEGIS_FSM_DEFERRAL_TTL_SECONDS: "30"
+          AEGIS_FSM_DEFERRAL_TOLERANCE_SECONDS: "7"
+  resources:
+    # IMPORTANT NOTE: if count is modified, then ensure various replicas field below are correct
+    cp:
+      count: 3
+    node:
+      # determines Agent(daemonset) worker count
+      count: 3
+    sink:
+      count: 2
+    composer:
+      count: 2
+
+chain:
+  - action: "print"
+    message: "Starting Successful FSM Scenario..."
+
+  - action: "print"
+    message: "Injecting fault and waiting for FSM to start..."
+    
+  - action: "inject_fault"
+    stage_id: "fault-stage-1"  # Optional ID to track this specific pod group
+    target_count: 1
+    mode: "latency_spike"
+    correlation_id_prefix: "scenario-latency"
+    wait_for_fsm_creation_timeout_ms: 45000
+    
+  - action: "print"
+    message: "Restoring agent to normal state so it stops emitting faulty metrics..."
+    
+  - action: "inject_fault"
+    target_ref_id: "fault-stage-1"
+    mode: "normal"
+    always_run: true
+    always_run_depends_on: "fault-stage-1"
+    continue_on_err: true
+    
+  - action: "wait"
+    delay_seconds: 15
+    reason: "Latency spike injected! Open Tilt to observe the CP detecting the spike and gradually progressing the FSM to Delivered State at which an email should be received."
+    show_urls_with_regex: '(?!.*\[KAFKA_RECEIVE|.*\[KAFKA_RAW|.*\[DEFERRALS_SCANNED).*?(FSM|latency_spike|incident)'
+    
+  - action: "wait_for_fsm_state"
+    stage_id: "wait_fsm_1"
+    error_type: "latency_spike"
+    target_ref_id: "fault-stage-1"
+    expected_state: "DELIVERED"
+    timeout_ms: 150000
+    always_run: true
+    always_run_depends_on: "fault-stage-1"
+    continue_on_err: false
+    
+  - action: "pause"
+    color: "green"
+    message: "FSM has successfully reached DELIVERED state! Please check the mock email server to confirm the postmortem was delivered, then press Enter to run the AEGIS-CLI and resolve the incident."
+    
+  - action: "aegis-cli"
+    target_ref_id: "fault-stage-1"
+    error_type: "latency_spike"
+    args: []
+    always_run: true
+    always_run_depends_on: "wait_fsm_1"
+    continue_on_err: true
+    
+  - action: "pause"
+    color: "green"
+    message: "Resolution complete. Incident should now be healthy in Tilt. Press Enter to clean up and finish."

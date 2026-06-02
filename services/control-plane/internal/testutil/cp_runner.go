@@ -3,6 +3,7 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,8 +49,21 @@ func GetWorkerForCP(t *testing.T, targetCP string, nodeIDs []string) string {
 	return ""
 }
 
+func getFreePort() (int, error) {
+	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
+	if err != nil {
+		return 0, err
+	}
+	l, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
 // startCPNode executes the pre-compiled control plane binary as a child process.
-func startCPNode(id, address, redisAddr string, kafkaBrokers []string, extraEnv map[string]string, binPath string) (string, *exec.Cmd, error) {
+func startCPNode(id, address, redisAddr string, kafkaBrokers []string, extraEnv map[string]string, binPath string) (string, *exec.Cmd, *strings.Builder, error) {
 	// Pick a unique high port using atomic counter to avoid TOCTOU collisions
 	port := atomic.AddInt32(&nextPort, 1)
 	grpcAddr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -70,15 +84,13 @@ func startCPNode(id, address, redisAddr string, kafkaBrokers []string, extraEnv 
 	}
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
-	if verbose := os.Getenv("AEGIS_TEST_INFRA_SETUP_VERBOSE"); verbose == "1" || verbose == "true" {
-		cmd.Stdout = os.Stdout
-	}
+	cmd.Stdout = os.Stdout
 
 	if err := cmd.Start(); err != nil {
-		return "", nil, fmt.Errorf("failed to start main.go subprocess for %s: %v", id, err)
+		return "", nil, nil, fmt.Errorf("failed to start main.go subprocess for %s: %v", id, err)
 	}
 
-	return grpcAddr, cmd, nil
+	return grpcAddr, cmd, &stderrBuf, nil
 }
 
 // teardownCPNode gracefully shuts down the CP process.
@@ -99,7 +111,7 @@ func teardownCPNode(cmd *exec.Cmd) {
 }
 
 // waitForCPReady polls the provided CP process gRPC address until it responds successfully.
-func waitForCPReady(grpcAddr string, cmd *exec.Cmd) (aegisv1.ControlPlaneTelemetryClient, *grpc.ClientConn, error) {
+func waitForCPReady(grpcAddr string, cmd *exec.Cmd, stderrBuf *strings.Builder) (aegisv1.ControlPlaneTelemetryClient, *grpc.ClientConn, error) {
 	var conn *grpc.ClientConn
 	var client aegisv1.ControlPlaneTelemetryClient
 	var err error
@@ -121,7 +133,7 @@ func waitForCPReady(grpcAddr string, cmd *exec.Cmd) (aegisv1.ControlPlaneTelemet
 	}
 	if !ready {
 		_ = cmd.Process.Kill()
-		return nil, nil, fmt.Errorf("main.go gRPC server failed to become ready on %s", grpcAddr)
+		return nil, nil, fmt.Errorf("main.go gRPC server failed to become ready on %s, stderr: %s", grpcAddr, stderrBuf.String())
 	}
 	return client, conn, nil
 }
@@ -180,15 +192,21 @@ func (f *CPTestClusterFactory) StartCluster(t *testing.T) []aegisv1.ControlPlane
 		for _, id := range f.nodeIDs {
 			address := fmt.Sprintf("%s:50051", id)
 			
-			grpcAddress, cmd, err := startCPNode(id, address, f.redisAddr, f.kafkaBrokers, f.extraEnv, f.binPath)
+			grpcAddress, cmd, stderrBuf, err := startCPNode(id, address, f.redisAddr, f.kafkaBrokers, f.extraEnv, f.binPath)
 			if err != nil {
-				t.Fatalf("failed to start %s: %v", id, err)
+				if t != nil {
+					t.Fatalf("failed to start %s: %v", id, err)
+				}
+				panic(fmt.Sprintf("failed to start %s: %v", id, err))
 			}
 			f.cmds = append(f.cmds, cmd)
 
-			client, conn, err := waitForCPReady(grpcAddress, cmd)
+			client, conn, err := waitForCPReady(grpcAddress, cmd, stderrBuf)
 			if err != nil {
-				t.Fatalf("failed to wait for %s: %v", id, err)
+				if t != nil {
+					t.Fatalf("failed to wait for %s: %v", id, err)
+				}
+				panic(fmt.Sprintf("failed to wait for %s: %v", id, err))
 			}
 			f.clients = append(f.clients, client)
 			f.conns = append(f.conns, conn)

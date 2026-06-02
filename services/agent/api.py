@@ -9,8 +9,7 @@ from pydantic import BaseModel
 from .diagnostics import DiagnosticBuffer
 from .telemetry import SyntheticCollector
 
-logger = logging.getLogger(__name__)
-
+from services.pkg.pylogger.logger import logger
 app = FastAPI(
     title="Aegis Agent Diagnostics API",
     description="Local diagnostic API for Aegis GPU/AI Agent",
@@ -24,6 +23,7 @@ app.state.collector = None
 
 class SimulationRequest(BaseModel):
     mode: str
+    correlation_id: str | None = None
 
 
 @app.get("/health")
@@ -61,6 +61,6 @@ def set_simulation_mode(req: SimulationRequest) -> dict[str, str]:
     if req.mode not in valid_modes:
         raise HTTPException(status_code=400, detail=f"Invalid mode. Must be one of {valid_modes}")
         
-    collector.set_mode(req.mode)
-    logger.info("Simulation mode set to %s via API", req.mode)
+    collector.set_mode(req.mode, req.correlation_id)
+    logger.info("Simulation mode set to %s via API with correlation_id=%s", req.mode, req.correlation_id, extra={"component": "API", "event": "SIMULATION_MODE_SET", "mode": req.mode, "correlation_id": req.correlation_id})
     return {"status": "success", "mode": req.mode}

@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,11 +16,34 @@ import (
 	"github.com/aegis/aegis/services/control-plane/internal/kafka"
 	"github.com/aegis/aegis/services/control-plane/internal/membership"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
+	"github.com/aegis/aegis/services/pkg/logger"
 )
 
 func main() {
 	if len(os.Args) < 2 {
 		printUsageAndExit()
+	}
+
+	verbose := false
+	nonInteractive := false
+	for _, arg := range os.Args {
+		if arg == "--verbose" || arg == "-v" {
+			verbose = true
+		}
+		if arg == "--non-interactive" {
+			nonInteractive = true
+		}
+	}
+
+	dbg := strings.ToLower(os.Getenv("AEGIS_DEBUG"))
+	debugEnabled := verbose || dbg == "true" || dbg == "1"
+
+	if nonInteractive {
+		logger.Setup(debugEnabled)
+	} else {
+		if debugEnabled {
+			slog.SetLogLoggerLevel(slog.LevelDebug)
+		}
 	}
 
 	subcommand := os.Args[1]
@@ -30,20 +55,99 @@ func main() {
 	resolveFlags := flag.NewFlagSet("resolve", flag.ExitOnError)
 	fixCorruptFSM := resolveFlags.Bool("fix-corrupt-fsm", false, "Reset FSM state to HEALTHY after clearing stuck/corrupt flags")
 	force := resolveFlags.Bool("force", false, "Ignore transition validation errors and forcefully overwrite state in Redis")
+	fixAll := resolveFlags.Bool("fix-all", false, "Reset FSM state to HEALTHY and forcefully overwrite state (combines --fix-corrupt-fsm and --force)")
 	targetStateStr := resolveFlags.String("state", "", "Force a specific target state (must be used with --force)")
-	redisAddr := resolveFlags.String("redis-addr", getEnv("AEGIS_REDIS_ADDR", "localhost:6379"), "Redis server address")
-	kafkaBrokersStr := resolveFlags.String("kafka-brokers", getEnv("AEGIS_KAFKA_BROKERS", "localhost:9092"), "Kafka broker addresses (comma-separated)")
+	usecase := resolveFlags.String("usecase", getEnv("AEGIS_USECASE", "local"), "Aegis usecase: local, intg-test, scenario")
+	redisAddr := resolveFlags.String("redis-addr", "", "Redis server address (default inferred from --usecase)")
+	kafkaBrokersStr := resolveFlags.String("kafka-brokers", "", "Kafka broker addresses (comma-separated, default inferred from --usecase)")
+	yes := resolveFlags.Bool("yes", false, "Bypass all confirmation prompts (assume yes)")
+	_ = resolveFlags.Bool("non-interactive", false, "Use structured JSON/Dev logging instead of default interactive logging")
+	_ = resolveFlags.Bool("verbose", false, "Enable verbose/debug logging (can also use -v)")
+	_ = resolveFlags.Bool("v", false, "Enable verbose/debug logging (shorthand for --verbose)")
 
-	_ = resolveFlags.Parse(os.Args[2:])
-	args := resolveFlags.Args()
-	if len(args) < 2 {
+	// Go's flag package stops parsing at the first positional argument.
+	// To make the CLI SRE-friendly (allowing flags at the end of the command),
+	// we separate flags from positional args manually before parsing.
+	var flagsOnly []string
+	var positionals []string
+
+	for _, arg := range os.Args[2:] {
+		if strings.HasPrefix(arg, "-") {
+			flagsOnly = append(flagsOnly, arg)
+			// Handle cases like --state HEALTHY
+			if arg == "--state" || arg == "-state" || arg == "--redis-addr" || arg == "-redis-addr" || arg == "--kafka-brokers" || arg == "-kafka-brokers" || arg == "--usecase" || arg == "-usecase" {
+				// We'll let flag.Parse handle the actual value parsing, this is just to prevent breaking positionals
+			}
+		} else {
+			// If the previous argument was a flag that requires a value, this is its value, not a positional.
+			if len(flagsOnly) > 0 {
+				lastFlag := flagsOnly[len(flagsOnly)-1]
+				if lastFlag == "--state" || lastFlag == "-state" || lastFlag == "--redis-addr" || lastFlag == "-redis-addr" || lastFlag == "--kafka-brokers" || lastFlag == "-kafka-brokers" || lastFlag == "--usecase" || lastFlag == "-usecase" {
+					flagsOnly = append(flagsOnly, arg)
+					continue
+				}
+			}
+			positionals = append(positionals, arg)
+		}
+	}
+
+	_ = resolveFlags.Parse(flagsOnly)
+
+	var portsData map[string]map[string]any
+	portsJSONFound := false
+	if dir, err := os.Getwd(); err == nil {
+		for dir != "/" && dir != "." {
+			data, err := os.ReadFile(filepath.Join(dir, "scripts", "ports.json"))
+			if err == nil {
+				if err := json.Unmarshal(data, &portsData); err == nil {
+					portsJSONFound = true
+				}
+				break
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+
+	if *redisAddr == "" {
+		if envAddr := os.Getenv("AEGIS_REDIS_ADDR"); envAddr != "" {
+			*redisAddr = envAddr
+		} else if portsJSONFound && portsData[*usecase] != nil {
+			if port, ok := portsData[*usecase]["redis"].(float64); ok {
+				*redisAddr = fmt.Sprintf("localhost:%d", int(port))
+			}
+		}
+		if *redisAddr == "" {
+			fmt.Fprintf(os.Stderr, "error: could not determine redis address (check scripts/ports.json or AEGIS_REDIS_ADDR)\n")
+			os.Exit(1)
+		}
+	}
+
+	if *kafkaBrokersStr == "" {
+		if envBrokers := os.Getenv("AEGIS_KAFKA_BROKERS"); envBrokers != "" {
+			*kafkaBrokersStr = envBrokers
+		} else if portsJSONFound && portsData[*usecase] != nil {
+			if port, ok := portsData[*usecase]["kafka_bootstrap"].(float64); ok {
+				*kafkaBrokersStr = fmt.Sprintf("localhost:%d", int(port))
+			}
+		}
+		if *kafkaBrokersStr == "" {
+			fmt.Fprintf(os.Stderr, "error: could not determine kafka address (check scripts/ports.json or AEGIS_KAFKA_BROKERS)\n")
+			os.Exit(1)
+		}
+	}
+
+	if len(positionals) < 2 {
 		fmt.Fprintf(os.Stderr, "error: resolve requires <worker_id> and <error_type>\n")
 		resolveFlags.Usage()
 		os.Exit(1)
 	}
 
-	workerID := args[0]
-	errorType := args[1]
+	workerID := positionals[0]
+	errorType := positionals[1]
 
 	var validStates = []state.WorkerHealthState{
 		state.WorkerHealthy,
@@ -58,12 +162,18 @@ func main() {
 		state.WorkerResolved,
 	}
 
+	if *fixAll {
+		*fixCorruptFSM = true
+		*force = true
+		*targetStateStr = "HEALTHY"
+	}
+
+	if *targetStateStr != "" && !*force {
+		fmt.Fprintf(os.Stderr, "error: --state requires --force to be used\n")
+		os.Exit(1)
+	}
+
 	if *targetStateStr != "" {
-		if !*force {
-			fmt.Fprintf(os.Stderr, "error: --state requires --force to be used\n")
-			os.Exit(1)
-		}
-		
 		isValid := false
 		for _, s := range validStates {
 			if string(s) == *targetStateStr {
@@ -75,13 +185,29 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: invalid state string: %s\n", *targetStateStr)
 			os.Exit(1)
 		}
+	}
 
-		fmt.Printf("WARNING: You are forcefully setting the state to %s.\nAre you sure you want to proceed? [y/N]: ", *targetStateStr)
-		var response string
-		_, err := fmt.Scanln(&response)
-		if err != nil || strings.ToLower(strings.TrimSpace(response)) != "y" {
-			fmt.Println("Aborting.")
-			os.Exit(0)
+	if !*yes {
+		if *fixAll {
+			fmt.Printf("WARNING: You are about to completely wipe and reset the FSM state for this worker to HEALTHY.\nThis is a destructive disaster recovery operation.\nType 'RESOLVE' to confirm: ")
+			var response string
+			_, err := fmt.Scanln(&response)
+			if err != nil || strings.TrimSpace(response) != "RESOLVE" {
+				fmt.Println("Aborting.")
+				os.Exit(0)
+			}
+		} else if *force {
+			msg := "WARNING: You are forcefully overriding safety checks."
+			if *targetStateStr != "" {
+				msg = fmt.Sprintf("WARNING: You are forcefully setting the state to %s.", *targetStateStr)
+			}
+			fmt.Printf("%s\nAre you sure you want to proceed? [y/N]: ", msg)
+			var response string
+			_, err := fmt.Scanln(&response)
+			if err != nil || strings.ToLower(strings.TrimSpace(response)) != "y" {
+				fmt.Println("Aborting.")
+				os.Exit(0)
+			}
 		}
 	}
 
@@ -93,17 +219,18 @@ func main() {
 
 	err := RunResolve(ctx, store, pub, workerID, errorType, *fixCorruptFSM, *force, *targetStateStr, time.Now().UTC())
 	if err != nil {
-		slog.Error("resolve failed", "error", err)
+		slog.Error("resolve failed", "component", "CLI", "event", "RESOLVE_ERR", "error", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Successfully resolved incident for worker=%s error_type=%s (fix_corrupt_fsm=%v, force=%v, state=%s)\n", workerID, errorType, *fixCorruptFSM, *force, *targetStateStr)
+	slog.Info("Successfully resolved incident", "component", "CLI", "event", "RESOLVE_SUCCESS", "worker_id", workerID, "error_type", errorType, "fix_corrupt_fsm", *fixCorruptFSM, "force", *force, "state", *targetStateStr)
 }
 
 func printUsageAndExit() {
 	fmt.Fprintf(os.Stderr, "Usage: aegis-cli <subcommand> [flags] [args...]\n")
 	fmt.Fprintf(os.Stderr, "Subcommands:\n")
-	fmt.Fprintf(os.Stderr, "  resolve <worker_id> <error_type> [--fix-corrupt-fsm] [--force] [--state <STATE>]\n")
+	fmt.Fprintf(os.Stderr, "  resolve <worker_id> <error_type> [--fix-all] [--fix-corrupt-fsm] [--force] [--state <STATE>]\n")
+	fmt.Fprintf(os.Stderr, "\nIMPORTANT NOTE: Running this command before an FSM terminates natively can cause FSM corruption.\n")
 	os.Exit(1)
 }
 
@@ -125,22 +252,37 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 		return fmt.Errorf("get worker state: %w", err)
 	}
 
-	if fixCorruptFSM && (existing == nil || existing.CurrentState == "") {
-		return errors.New("cannot fix corrupt FSM: no existing state found for this worker")
+	if existing == nil || existing.CurrentState == "" {
+		return errors.New("cannot resolve: no existing FSM state found for this worker")
 	}
 
-	fromState := state.WorkerHealthy
-	incidentID := fmt.Sprintf("manual-resolve-%s-%d", workerID, now.Unix())
-	correlationID := fmt.Sprintf("corr-cli-%d", now.UnixNano())
+	marker, err := store.GetDLQMarker(ctx, workerID, errorType)
+	if err != nil {
+		return fmt.Errorf("failed to check DLQ marker: %w", err)
+	}
 
-	if existing != nil && existing.CurrentState != "" {
-		fromState = state.WorkerHealthState(existing.CurrentState)
-		if existing.IncidentID != "" {
-			incidentID = existing.IncidentID
+	if marker != "" && !fixCorruptFSM && !force {
+		return fmt.Errorf("cannot resolve natively: FSM is corrupt (evidence: %s). You must use --fix-corrupt-fsm to resolve it", marker)
+	}
+
+	if fixCorruptFSM {
+		if marker == "" && !force {
+			return errors.New("cannot fix corrupt FSM: no corruption evidence (DLQ marker) found in Redis; use --force to override")
 		}
-		if existing.CorrelationID != "" {
-			correlationID = existing.CorrelationID
+
+		if marker == "" && force {
+			slog.Warn("no corruption evidence found, but --force was provided. Proceeding with fix.", "component", "CLI", "event", "FORCE_FIX")
 		}
+	}
+
+	fromState := state.WorkerHealthState(existing.CurrentState)
+	incidentID := existing.IncidentID
+	if incidentID == "" {
+		incidentID = fmt.Sprintf("manual-resolve-%s-%d", workerID, now.Unix())
+	}
+	correlationID := existing.CorrelationID
+	if correlationID == "" {
+		correlationID = fmt.Sprintf("corr-cli-%d", now.UnixNano())
 	}
 
 	toState := state.WorkerResolved
@@ -149,6 +291,14 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 	}
 	if targetStateStr != "" && force {
 		toState = state.WorkerHealthState(targetStateStr)
+	}
+
+	if force && fromState == toState {
+		return fmt.Errorf("cannot force transition: FSM is already in state %s", toState)
+	}
+
+	if !force && !fixCorruptFSM && fromState == toState {
+		return fmt.Errorf("cannot resolve: FSM is already in state %s", toState)
 	}
 
 	if !force && !fixCorruptFSM && fromState != toState {
@@ -162,6 +312,9 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 		return fmt.Errorf("delete dlq marker: %w", err)
 	}
 
+	// Also clear any deferred DELIVERED events to prevent state leakage to future incidents
+	_ = store.DeleteDeferredEvent(ctx, workerID, errorType, incident.TopicDeliveryStatus)
+
 	// Set authoritative Redis state
 	st := membership.WorkerState{
 		WorkerID:      workerID,
@@ -174,9 +327,16 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 	if err := store.SetWorkerState(ctx, st); err != nil {
 		return fmt.Errorf("set worker state: %w", err)
 	}
+	slog.Info("successful FSM transition", "component", "CLI", "event", "FSM_TRANSITION",
+		"worker_id", workerID,
+		"error_type", errorType,
+		"incident_id", incidentID,
+		"from_state", string(fromState),
+		"to_state", string(toState),
+	)
 
-	// Publish repair tombstone event to DLQ topic
-	if pub != nil {
+	// Publish repair tombstone event to DLQ topic ONLY when fixing a corrupt FSM
+	if fixCorruptFSM && pub != nil {
 		inc := state.Incident{
 			IncidentID:    incidentID,
 			WorkerID:      workerID,

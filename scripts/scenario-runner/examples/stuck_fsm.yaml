@@ -1,0 +1,115 @@
+name: "Stuck FSM Alert and SRE Resolution Workflow"
+cluster:
+  resources:
+    # IMPORTANT NOTE: if count is modified, then ensure various replicas field below are correct
+    cp:
+      count: 3
+    node:
+      # determines Agent(daemonset) worker count
+      count: 3
+    sink:
+      count: 2
+    composer:
+      count: 2
+  config:
+    env_overrides:
+      - target: "DaemonSet/aegis-agent"
+        envs:
+          AEGIS_HEARTBEAT_INTERVAL_SECONDS: "6"
+      - target: "StatefulSet/aegis-control-plane"
+        envs:
+          AEGIS_HEARTBEAT_EXPIRY_SECONDS: "12"
+          AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS: "15"
+
+          # set to a small value so that the observer can see the stuck logs ASAP
+          AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS: "15"
+
+          AEGIS_FSM_DEFERRAL_TTL_SECONDS: "30"
+          AEGIS_FSM_DEFERRAL_TOLERANCE_SECONDS: "7"
+chain:
+  - action: "print"
+    message: "Scaling down aegis-composer to pause postmortem generation..."
+
+  - action: "print"
+    message: "By scaling composer to zero, we know the FSM state will pause at DIAGNOSTICS_COLLECTED. This will deterministically make our next step of publishing a forged 'delivered' message cause an FSM corruption, because it is not an event composer will publish hence an unexpected state jump!"
+
+  - action: "kubectl_scale"
+    stage_id: "scale_composer_0"
+    deployment: "aegis-composer"
+    replicas: 0
+
+  - action: "print"
+    message: "Injecting latency spike to trigger an incident and waiting for FSM to be initialized..."
+
+  - action: "inject_fault"
+    mode: "latency_spike"
+    target_count: 1
+    stage_id: "latency_fault_1"
+    correlation_id_prefix: "scenario-latency"
+    wait_for_fsm_creation_timeout_ms: 45000
+
+  - action: "print"
+    message: "Incident triggered. Restoring agent to normal state, which also prevents re-triggering the incident after resolution..."
+
+  - action: "inject_fault"
+    target_ref_id: "latency_fault_1"
+    mode: "normal"
+    always_run: true
+    always_run_depends_on: "latency_fault_1"
+    continue_on_err: true
+
+  - action: "wait"
+    delay_seconds: 20
+    reason: "Wait for watchdog to detect the stuck incident and flag it as STUCK"
+    
+  - action: "pause"
+    color: "red"
+    message: "FSM should be stuck now! Check Control Plane logs in Tilt for '[STUCK_INCIDENT]'."
+    show_urls_with_regex: '(?!.*\[KAFKA_RECEIVE|.*\[KAFKA_RAW|.*\[DEFERRALS_SCANNED).*?(FSM|latency_spike|Watchdog|incident|STUCK|resolved)'
+
+  - action: "print"
+    color: "yellow"
+    message: >-
+      We will now scale Composer back up so the FSM can finish naturally instead of using aegis-cli --force here,
+      because using the cli to resolve an active incident while Composer is or will(after it wakes up) be processing
+      will cause an illegal transition (RESOLVED/HEALTHY(set by aegiscli) -> POSTMORTEM_GENERATED) and
+      corrupt the FSM!
+
+  - action: "kubectl_scale"
+    deployment: "aegis-composer"
+    replicas: 2
+    always_run: true
+    always_run_depends_on: "scale_composer_0"
+    continue_on_err: true
+
+  - action: "print"
+    message: "Waiting for the FSM to reach DELIVERED state naturally..."
+    
+  - action: "wait_for_fsm_state"
+    stage_id: "wait_fsm_1"
+    error_type: "latency_spike"
+    target_ref_id: "latency_fault_1"
+    expected_state: "DELIVERED"
+    timeout_ms: 150000
+    always_run: true
+    always_run_depends_on: "latency_fault_1"
+    continue_on_err: false
+
+  - action: "print"
+    message: "FSM reached DELIVERED successfully! Now running SRE-CLI to formally resolve it..."
+    always_run: true
+    always_run_depends_on: "wait_fsm_1"
+    continue_on_err: true
+    
+  - action: "aegis-cli"
+    error_type: "latency_spike"
+    target_ref_id: "latency_fault_1"
+    args: []
+    always_run: true
+    always_run_depends_on: "wait_fsm_1"
+    continue_on_err: true
+
+  - action: "pause"
+    color: "green"
+    message: "Resolution complete. Incident should now be healthy in Tilt. Press Enter to clean up and finish."
+    

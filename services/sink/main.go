@@ -5,17 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aegis/aegis/services/sink/internal/types"
 
 	"github.com/aegis/aegis/services/sink/internal/delivery"
 	aegiskafka "github.com/aegis/aegis/services/sink/internal/kafka"
 	"github.com/aegis/aegis/services/sink/internal/sinks"
+	"github.com/aegis/aegis/services/pkg/logger"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -58,33 +61,21 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func setupLogger(debug bool) *slog.Logger {
-	level := slog.LevelInfo
-	if debug {
-		level = slog.LevelDebug
-	}
-	opts := &slog.HandlerOptions{Level: level}
-	handler := slog.NewJSONHandler(os.Stdout, opts)
-	return slog.New(handler)
-}
-
 func main() {
 	cfg := loadConfig()
-	logger := setupLogger(cfg.Debug)
-	slog.SetDefault(logger)
-
+	logger.Setup(cfg.Debug)
+	
 	var activeSinks []delivery.Sink
 
 	if cfg.FileSinkEnabled {
-		logger.Info("File sink enabled", "directory", cfg.FileSinkDir)
+		slog.Info("File sink enabled", "component", "MAIN", "event", "FILE_SINK_INIT", "directory", cfg.FileSinkDir)
 		activeSinks = append(activeSinks, &sinks.FileSink{
 			Directory: cfg.FileSinkDir,
-			Logger:    logger,
 		})
 	}
 
 	if cfg.EmailSinkEnabled {
-		logger.Info("Email sink enabled")
+		slog.Info("Email sink enabled", "component", "MAIN", "event", "EMAIL_SINK_INIT")
 		emailSink := &sinks.EmailSink{
 			Host:     cfg.SMTPHost,
 			Port:     cfg.SMTPPort,
@@ -92,48 +83,59 @@ func main() {
 			Password: cfg.SMTPPass,
 			To:       cfg.SMTPTo,
 			From:     cfg.SMTPFrom,
-			Logger:   logger,
 		}
 		if err := emailSink.Validate(); err != nil {
-			logger.Error("Email sink configuration error", "error", err)
+			slog.Error("Email sink configuration error", "component", "MAIN", "event", "EMAIL_SINK_ERR", "error", err)
 			os.Exit(1)
 		}
 		activeSinks = append(activeSinks, emailSink)
 	}
 
 	if len(activeSinks) == 0 {
-		logger.Warn("No sinks are enabled. Sink service will consume messages but not deliver them.")
+		slog.Warn("No sinks are enabled. Sink service will consume messages but not deliver them.", "component", "MAIN", "event", "NO_SINKS")
 	}
 
-	publisher := aegiskafka.NewPublisher(cfg.KafkaBrokers, logger)
+	publisher := aegiskafka.NewPublisher(cfg.KafkaBrokers)
 	defer publisher.Close()
 
 	worker := delivery.NewWorker(activeSinks, publisher, 3)
 
 	if cfg.Debug {
-		go startHTTPServer(logger, worker)
+		go startHTTPServer(worker)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		DualStack: true,
+		KeepAlive: 30 * time.Second,
+	}
+
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: cfg.KafkaBrokers,
-		Topic:   delivery.TopicGenerated,
-		GroupID: cfg.KafkaGroupID,
+		Brokers:     cfg.KafkaBrokers,
+		Topic:       delivery.TopicGenerated,
+		GroupID:     cfg.KafkaGroupID,
+		StartOffset: kafka.FirstOffset,
+		Dialer:      &kafka.Dialer{
+			Timeout:   dialer.Timeout,
+			DualStack: dialer.DualStack,
+			KeepAlive: dialer.KeepAlive,
+		},
 	})
 	defer reader.Close()
 
-	go consumeKafka(ctx, logger, reader, worker)
+	go consumeKafka(ctx, reader, worker)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigChan
-	logger.Info("Received signal, shutting down", "signal", sig)
+	slog.Info("Received signal, shutting down", "component", "MAIN", "event", "SHUTDOWN", "signal", sig)
 }
 
-func consumeKafka(ctx context.Context, logger *slog.Logger, reader *kafka.Reader, worker *delivery.Worker) {
-	logger.Info("Started consuming from Kafka", "topic", delivery.TopicGenerated)
+func consumeKafka(ctx context.Context, reader *kafka.Reader, worker *delivery.Worker) {
+	slog.Info("Started consuming from Kafka", "component", "KAFKA", "event", "CONSUME_START", "topic", delivery.TopicGenerated)
 
 	for {
 		m, err := reader.ReadMessage(ctx)
@@ -141,18 +143,18 @@ func consumeKafka(ctx context.Context, logger *slog.Logger, reader *kafka.Reader
 			if errors.Is(err, context.Canceled) {
 				return
 			}
-			logger.Error("Error reading message from kafka", "error", err)
+			slog.Error("Error reading message from kafka", "component", "KAFKA", "event", "READ_ERR", "error", err)
 			continue
 		}
 
 		var envelope types.Envelope
 		if err := json.Unmarshal(m.Value, &envelope); err != nil {
-			logger.Error("Failed to unmarshal kafka message envelope", "error", err, "message", string(m.Value))
+			slog.Error("Failed to unmarshal kafka message envelope", "component", "KAFKA", "event", "UNMARSHAL_ERR", "error", err, "message", string(m.Value))
 			continue
 		}
 
 		if envelope.EventType != "aegis.postmortem.generated" {
-			logger.Warn("Ignored unexpected event type", "event_type", envelope.EventType)
+			slog.Warn("Ignored unexpected event type", "component", "KAFKA", "event", "UNEXPECTED_EVENT", "event_type", envelope.EventType)
 			continue
 		}
 
@@ -170,16 +172,16 @@ func consumeKafka(ctx context.Context, logger *slog.Logger, reader *kafka.Reader
 
 		results, err := worker.Deliver(ctx, pm)
 		if err != nil {
-			logger.Error("Error during delivery", "incident_id", pm.IncidentID, "error", err)
+			slog.Error("Error during delivery", "component", "SINK_DELIVERY", "event", "DELIVERY_ERR", "incident_id", pm.IncidentID, "error", err)
 			continue
 		}
 
-		logger.Info("Processed generated postmortem", "incident_id", pm.IncidentID, "results", results)
+		slog.Info("Processed generated postmortem", "component", "SINK_DELIVERY", "event", "DELIVERY_SUCCESS", "incident_id", pm.IncidentID, "results", results)
 	}
 }
 
 // HTTP Server logic for swagger / test trigger
-func startHTTPServer(logger *slog.Logger, worker *delivery.Worker) {
+func startHTTPServer(worker *delivery.Worker) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
@@ -216,9 +218,9 @@ func startHTTPServer(logger *slog.Logger, worker *delivery.Worker) {
 		port = "8081"
 	}
 
-	logger.Info("Starting debug HTTP server on :" + port)
+	slog.Info("Starting debug HTTP server", "component", "MAIN", "event", "HTTP_START", "port", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		logger.Error("HTTP server error", "error", err)
+		slog.Error("HTTP server error", "component", "MAIN", "event", "HTTP_ERR", "error", err)
 	}
 }
 

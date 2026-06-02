@@ -9,7 +9,7 @@ type Postmortem struct {
 	Severity      string            `json:"severity"`
 	GeneratedAt   time.Time         `json:"generated_at"`
 	CorrelationID string            `json:"correlation_id"`
-	Metadata      map[string]string `json:"metadata"`
+	Metadata      map[string]any    `json:"metadata"`
 }
 
 type Result struct {

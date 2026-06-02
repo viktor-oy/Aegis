@@ -5,10 +5,7 @@ terraform {
       source  = "tehcyx/kind"
       version = "~> 0.7.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.11"
-    }
+
     null = {
       source  = "hashicorp/null"
       version = "~> 3.2"
@@ -33,21 +30,38 @@ resource "kind_cluster" "aegis" {
     node {
       role = "control-plane"
     }
+
+    dynamic "node" {
+      for_each = range(var.node_count > 1 ? var.node_count - 1 : 0)
+      content {
+        role = "worker"
+      }
+    }
   }
 }
 
-provider "kubernetes" {
-  host                   = kind_cluster.aegis.endpoint
-  client_certificate     = kind_cluster.aegis.client_certificate
-  client_key             = kind_cluster.aegis.client_key
-  cluster_ca_certificate = kind_cluster.aegis.cluster_ca_certificate
-}
-
-resource "kubernetes_namespace" "aegis_system" {
-  metadata {
-    name = "aegis-system"
-  }
+resource "null_resource" "inotify_hack" {
   depends_on = [kind_cluster.aegis]
+  triggers = {
+    cluster_id = kind_cluster.aegis.id
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      docker ps -q -f name="^$${kind_cluster.aegis.name}-" | xargs -I {} docker exec {} sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
+    EOT
+  }
+}
+
+resource "null_resource" "aegis_system_namespace" {
+  depends_on = [kind_cluster.aegis]
+  triggers = {
+    cluster_id = kind_cluster.aegis.id
+  }
+
+  provisioner "local-exec" {
+    command = "kubectl create namespace aegis-system --context kind-${kind_cluster.aegis.name} --dry-run=client -o yaml | kubectl apply -f -"
+  }
 }
 
 resource "null_resource" "registry_setup" {

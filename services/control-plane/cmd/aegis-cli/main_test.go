@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aegis/aegis/services/control-plane/internal/incident"
 	"github.com/aegis/aegis/services/control-plane/internal/membership"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
 )
@@ -23,7 +22,6 @@ func TestRunResolve_DefaultResolve(t *testing.T) {
 		IncidentID:   "inc-100",
 		CurrentState: string(state.WorkerDelivered),
 	})
-	_ = store.SetDLQMarker(ctx, "worker-10", string(state.FailureECCBurst), "illegal transition")
 
 	err := RunResolve(ctx, store, pub, "worker-10", string(state.FailureECCBurst), false, false, "", now)
 	if err != nil {
@@ -41,11 +39,8 @@ func TestRunResolve_DefaultResolve(t *testing.T) {
 	}
 
 	events := pub.Events()
-	if len(events) != 1 || events[0].Topic != incident.TopicCorruptFSMDLQ {
-		t.Fatalf("expected 1 event on %s, got %v", incident.TopicCorruptFSMDLQ, events)
-	}
-	if events[0].Envelope.EventType != "aegis.cp.corrupt-fsm.repair" {
-		t.Fatalf("unexpected event type: %s", events[0].Envelope.EventType)
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events on normal resolve, got %d", len(events))
 	}
 }
 
@@ -94,7 +89,7 @@ func TestRunResolve_ForceOverride(t *testing.T) {
 		WorkerID:     "worker-30",
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc-300",
-		CurrentState: string(state.WorkerResolved),
+		CurrentState: string(state.WorkerDeliveryFailed),
 	})
 
 	err := RunResolve(ctx, store, pub, "worker-30", string(state.FailureECCBurst), false, true, "", now)
@@ -136,8 +131,8 @@ func TestRunResolve_FixCorruptFSM_NoExistingState(t *testing.T) {
 	// Do not seed any worker state.
 
 	err := RunResolve(ctx, store, pub, "worker-50", string(state.FailureECCBurst), true, false, "", now)
-	if err == nil || err.Error() != "cannot fix corrupt FSM: no existing state found for this worker" {
-		t.Fatalf("expected error 'cannot fix corrupt FSM: no existing state found for this worker', got %v", err)
+	if err == nil || err.Error() != "cannot resolve: no existing FSM state found for this worker" {
+		t.Fatalf("expected error 'cannot resolve: no existing FSM state found for this worker', got %v", err)
 	}
 }
 
@@ -162,5 +157,24 @@ func TestRunResolve_ForceOverride_WithState(t *testing.T) {
 	st, _ := store.GetWorkerState(ctx, "worker-60", string(state.FailureECCBurst))
 	if st == nil || st.CurrentState != string(state.WorkerSuspected) {
 		t.Fatalf("expected state SUSPECTED, got %+v", st)
+	}
+}
+
+func TestRunResolve_AlreadyResolved_NoOp(t *testing.T) {
+	store := testutil.NewMockStore()
+	pub := &testutil.MockPublisher{}
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	_ = store.SetWorkerState(ctx, membership.WorkerState{
+		WorkerID:     "worker-70",
+		ErrorType:    string(state.FailureECCBurst),
+		IncidentID:   "inc-700",
+		CurrentState: string(state.WorkerResolved),
+	})
+
+	err := RunResolve(ctx, store, pub, "worker-70", string(state.FailureECCBurst), false, false, "", now)
+	if err == nil || err.Error() != "cannot resolve: FSM is already in state RESOLVED" {
+		t.Fatalf("expected error 'cannot resolve: FSM is already in state RESOLVED', got %v", err)
 	}
 }

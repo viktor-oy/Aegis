@@ -17,10 +17,11 @@ if not AEGIS_KUBE_CONTEXT:
     )
 
 def wipe_redis():
-    log_info("🧹 Wiping Redis State...")
+    log_info("🧹 Wiping Redis State (excluding CP membership leases)...")
+    lua_script = "local keys = redis.call('KEYS', 'aegis:*') for _, key in ipairs(keys) do if not string.match(key, '^aegis:cp:member:') then redis.call('DEL', key) end end"
     try:
         subprocess.run(
-            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-redis-master-0", "--", "redis-cli", "FLUSHALL"],
+            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-redis-master-0", "--", "redis-cli", "EVAL", lua_script, "0"],
             stdout=subprocess.DEVNULL
         )
     except FileNotFoundError:
@@ -83,7 +84,7 @@ def wipe_kafka(target_topics=None):
     try:
         subprocess.run(
             ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-i", "-n", "aegis-system", "aegis-kafka-controller-0", "-c", "kafka", "--", 
-             "/opt/bitnami/kafka/bin/kafka-delete-records.sh", "--bootstrap-server", "localhost:9092", "--offset-json-file", "/dev/stdin"],
+             "env", "KAFKA_HEAP_OPTS=-Xmx256m -Xms256m", "KAFKA_JVM_PERFORMANCE_OPTS=-client -XX:+TieredCompilation -XX:TieredStopAtLevel=1 -Xverify:none", "/opt/bitnami/kafka/bin/kafka-delete-records.sh", "--bootstrap-server", "localhost:9092", "--offset-json-file", "/dev/stdin"],
             input=json_str.encode('utf-8'),
             stdout=subprocess.DEVNULL,
             check=True
@@ -112,7 +113,7 @@ def main():
         elif target == "kafka" or target.startswith("kafka:"):
             if target.startswith("kafka:"):
                 topics = target.split(":", 1)[1].split(",")
-                wipe_kafka(target_topics=topics)
+                # wipe_kafka(target_topics=topics)
             else:
                 wipe_kafka()
         else:

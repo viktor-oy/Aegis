@@ -13,11 +13,11 @@ kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system
 kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system && \
     kubectl delete pvc -l app.kubernetes.io/name=kafka -n aegis-system
 
-    kubectl logs -l app.kubernetes.io/name=kafka -n aegis-system --prefix=true -f
+kubectl logs -l app.kubernetes.io/name=kafka -n aegis-system --prefix=true -f
 
-    kubectl delete statefulset aegis-kafka-controller -n aegis-system && \
-kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system && \
-kubectl delete pvc -l app.kubernetes.io/name=kafka -n aegis-system
+kubectl delete statefulset aegis-kafka-controller -n aegis-system && \
+    kubectl delete secret -l app.kubernetes.io/name=kafka -n aegis-system && \
+    kubectl delete pvc -l app.kubernetes.io/name=kafka -n aegis-system
 
 topicctl get offsets aegis.postmortem.requested --cluster-config infra/kafka/cluster.yaml
 
@@ -27,3 +27,69 @@ topicctl get lags aegis.diagnostics.collected test-group-15ed5e9e-f515-48a0-9515
 
 colima stop      
 colima start --memory 12
+
+colima ssh -- df -h
+
+go run gotest.tools/gotestsum@latest --format testname -- -p 1 -tags=integration -run ^TestIntegration_ ./services/control-plane/internal/server/... ./services/control-plane/internal/incident/...
+
+make tf-down
+make test-tf-down
+make scenario-tf-down 
+
+make tf-kill
+make test-tf-kill
+make scenario-tf-kill 
+
+kubectl events pods/aegis-kafka-controller-2 -n aegis-system 
+
+kubectl describe pods/aegis-kafka-controller-2 -n aegis-system
+
+kubectl get pods -n aegis-system --context=kind-aegis-intg-test
+
+kubectl get pods -n aegis-system --context=kind-aegis-scenario
+
+make cli ARGS="resolve <worker_id> <error_type> --force"
+
+make cli ARGS="resolve aegis-agent-h67rc latency_spike --usecase=scenario"
+
+touch services/agent/main.py
+
+make scenario FILE=scripts/scenario-runner/examples/fsm_corruption.yaml
+
+make cli ARGS="resolve aegis-system--aegis-agent-h67rc  missed_heartbeat --usecase=scenario --force"
+
+make cli ARGS="resolve aegis-system--aegis-agent-8v29 latency_spike --usecase=scenario --force"
+
+go run gotest.tools/gotestsum@latest --format testname -- -count=1 -p 1 -tags=integration -run ^TestIntegration_ ./services/control-plane/internal/incident/...
+
+from scratch
+commit time/author
+
+touch services/control-plane/internal/incident/manager.go
+
+mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli GET "aegis:cp:dlq:corrupt:aegis-system--aegis-agent-vlthf:latency_spike"
+mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli GET "aegis:cp:worker:state:aegis-system--aegis-agent-vlthf:latency_spike"
+
+mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli KEYS "aegis:cp*" 
+
+mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli KEYS "aegis:cp:dlq:corrupt:*"
+
+mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli DEL "aegis:cp:dlq:corrupt:*"   
+
+mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli DEL "aegis:cp:worker:state:*" 
+docker image prune -a -f
+kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- sh -c 'redis-cli KEYS "aegis:cp:dlq:corrupt:*" | xargs redis-cli DEL'
+
+kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- sh -c 'redis-cli KEYS "aegis:cp:dlq:corrupt:*" | xargs redis-cli DEL'
+
+docker builder prune -a -f
+
+====
+
+docker system df -v
+
+
+docker image prune -f
+docker container prune -f
+docker network prune -f
+docker volume prune -f

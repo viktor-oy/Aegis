@@ -17,14 +17,15 @@ from tests.integration.testutils import wipe_infra_state
 
 async def run_test() -> None:
     config = KafkaComposerConfig(
-        bootstrap_servers="localhost:9094",
+        bootstrap_servers="localhost:39093",
         group_id=f"test-group-{uuid4()}",
         input_topic="aegis.postmortem.requested",
         output_topic="aegis.postmortem.generated",
+        auto_offset_reset="latest",
     )
     llm_client = OpenAICompatibleInferenceClient(
         InferenceConfig(
-            base_url="http://localhost:11434",
+            base_url="http://localhost:31435/v1",
             model=os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b"),
             timeout_seconds=240.0
         )
@@ -35,7 +36,7 @@ async def run_test() -> None:
     task = asyncio.create_task(app.run())
     # Sleep hack: give the Composer's Kafka consumer group time to negotiate and assign
     # partitions. If we don't sleep, we might publish the event before it's fully listening.
-    await asyncio.sleep(2)
+    await asyncio.sleep(4)
     
     try:
         producer = AIOKafkaProducer(bootstrap_servers=config.bootstrap_servers)

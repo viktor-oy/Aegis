@@ -1,0 +1,24 @@
+apiVersion: builtin
+kind: HelmChartInflationGenerator
+metadata:
+  name: aegis
+name: aegis
+chartHome: ../../../helm
+releaseName: aegis
+namespace: aegis-system
+valuesFile: ../local/values-local.yaml
+valuesInline:
+  agent:
+    enabled: false
+  composer:
+    enabled: false
+  controlPlane:
+    enabled: false
+  sink:
+    enabled: false
+  kafka:
+    externalAccess:
+      controller:
+        service:
+          nodePorts: [30094, 30095, 30096]
+includeCRDs: true

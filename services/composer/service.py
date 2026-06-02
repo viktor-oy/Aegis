@@ -11,20 +11,20 @@ from .llm_client import InferenceClient
 from .prompt import build_prompt
 from .validator import validate_postmortem
 
-logger = logging.getLogger(__name__)
+from services.pkg.pylogger.logger import logger
 
 
 def load_prompt_string(env_var: str, default_file_path: str, name: str) -> str:
     env_val = os.getenv(env_var, "").strip()
     if env_val:
-        logger.info(f"Skipping default file [{default_file_path}], using ENV for {name}")
+        logger.info(f"Skipping default file [{default_file_path}], using ENV for {name}", extra={"component": "PROMPT_LOADER", "event": "USE_ENV_VAR", "prompt_name": name})
         return env_val
     else:
-        logger.info(f"Using default prompt file from [{default_file_path}] for {name}")
+        logger.info(f"Using default prompt file from [{default_file_path}] for {name}", extra={"component": "PROMPT_LOADER", "event": "USE_DEFAULT_FILE", "prompt_name": name, "file_path": default_file_path})
         try:
             return Path(default_file_path).read_text(encoding="utf-8")
         except FileNotFoundError:
-            logger.warning(f"Default prompt file [{default_file_path}] not found for {name}")
+            logger.warning(f"Default prompt file [{default_file_path}] not found for {name}", extra={"component": "PROMPT_LOADER", "event": "DEFAULT_FILE_MISSING", "prompt_name": name})
             return ""
 
 @dataclass(frozen=True)
@@ -88,7 +88,7 @@ class ComposerService:
         worker_id = str(diagnostic_event["worker_id"])
         correlation_id = str(diagnostic_event.get("correlation_id", ""))
         
-        logger.info(f"Building prompt for incident {incident_id}")
+        logger.info(f"Building prompt for incident {incident_id}", extra={"component": "COMPOSER_SERVICE", "event": "BUILD_PROMPT", "incident_id": incident_id})
         prompt = build_prompt(
             diagnostic_event=diagnostic_event, 
             sys_arch=self.sys_arch, 
@@ -99,19 +99,21 @@ class ComposerService:
             label_event_id=self.label_event_id,
         )
         
-        logger.info(f"Sending prompt to LLM for incident {incident_id}")
+        logger.info(f"Sending prompt to LLM for incident {incident_id}", extra={"component": "COMPOSER_SERVICE", "event": "SEND_TO_LLM", "incident_id": incident_id})
         markdown = await self.inference_client.complete(
             prompt,
             incident_id=incident_id,
             worker_id=worker_id,
         )
         
-        logger.info(f"Validating generated postmortem for incident {incident_id}")
+        logger.info(f"Validating generated postmortem for incident {incident_id}", extra={"component": "COMPOSER_SERVICE", "event": "VALIDATE_POSTMORTEM", "incident_id": incident_id})
         validation = validate_postmortem(markdown, incident_id=incident_id, worker_id=worker_id)
         if not validation.ok:
-            logger.warning(f"Postmortem validation failed for incident {incident_id}: {validation.errors}")
+            logger.warning(f"Postmortem validation failed for incident {incident_id}: {validation.errors}", extra={"component": "COMPOSER_SERVICE", "event": "VALIDATION_FAILED", "incident_id": incident_id, "errors": validation.errors})
+            logger.info(f"Auto-recovering metadata for incident {incident_id} into generated markdown", extra={"component": "COMPOSER_SERVICE", "event": "AUTO_RECOVER_METADATA", "incident_id": incident_id})
+            markdown += f"\n\n### Auto-Recovered Metadata\n- Event ID: {diagnostic_event.get('event_id', 'unknown')}\n- Incident ID: {incident_id}\n- Worker ID: {worker_id}\n"
         else:
-            logger.info(f"Postmortem validation successful for incident {incident_id}")
+            logger.info(f"Postmortem validation successful for incident {incident_id}", extra={"component": "COMPOSER_SERVICE", "event": "VALIDATION_SUCCESS", "incident_id": incident_id})
 
         return GeneratedPostmortem(
             event_type="aegis.postmortem.generated",
@@ -127,3 +129,4 @@ class ComposerService:
                 "validation_errors": validation.errors,
             },
         )
+ 

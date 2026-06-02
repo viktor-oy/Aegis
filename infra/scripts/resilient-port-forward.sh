@@ -8,6 +8,7 @@
 TARGET=$1
 NAMESPACE=$2
 PORTS=$3
+CONTEXT=$4
 
 PID=""
 
@@ -28,7 +29,11 @@ KUBELET_TIMEOUT_SECONDS=300
 REFRESH_INTERVAL_SECONDS=$((KUBELET_TIMEOUT_SECONDS - 60))
 
 while true; do
-  kubectl port-forward "$TARGET" -n "$NAMESPACE" "$PORTS" &
+  if [ -n "$CONTEXT" ]; then
+    kubectl --context "$CONTEXT" port-forward "$TARGET" -n "$NAMESPACE" "$PORTS" &
+  else
+    kubectl port-forward "$TARGET" -n "$NAMESPACE" "$PORTS" &
+  fi
   PID=$!
   
   # Run until the refresh interval then forcefully restart to beat the idle timeout.

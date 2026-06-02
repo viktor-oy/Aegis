@@ -78,7 +78,7 @@ func TestDeterministicIDHasIncPrefix(t *testing.T) {
 func TestHandleDetectionPublishesDegradedDiagnostics(t *testing.T) {
 	store := testutil.NewMockStore()
 	pub := &testutil.MockPublisher{}
-	manager := NewManager(store, pub, failingDiagnostics{}, "cp-test")
+	manager := NewManager(store, pub, failingDiagnostics{}, "cp-test", time.Minute)
 	ts := time.Date(2026, 3, 10, 14, 1, 0, 0, time.UTC)
 	inc, opened, err := manager.HandleDetection(context.Background(), state.DetectionResult{
 		WorkerID:      "worker-a",
@@ -97,12 +97,15 @@ func TestHandleDetectionPublishesDegradedDiagnostics(t *testing.T) {
 	if got := len(pub.Events()); got != 4 {
 		t.Fatalf("expected 4 events, got %d", got)
 	}
+	if store.AcquireLockCalls() == 0 {
+		t.Fatalf("expected AcquireFSMLock to be called")
+	}
 }
 
 func TestHandleDetectionWithSuccessfulDiagnostics(t *testing.T) {
 	store := testutil.NewMockStore()
 	pub := &testutil.MockPublisher{}
-	manager := NewManager(store, pub, okDiagnostics{}, "cp-test")
+	manager := NewManager(store, pub, okDiagnostics{}, "cp-test", time.Minute)
 	ts := time.Date(2026, 3, 10, 14, 1, 0, 0, time.UTC)
 	inc, opened, err := manager.HandleDetection(context.Background(), state.DetectionResult{
 		WorkerID:      "worker-a",
@@ -143,6 +146,9 @@ func TestHandleDetectionWithSuccessfulDiagnostics(t *testing.T) {
 			t.Errorf("event[%d]: expected correlation_id=corr-ok, got %s", i, ev.Envelope.CorrelationID)
 		}
 	}
+	if store.AcquireLockCalls() == 0 {
+		t.Fatalf("expected AcquireFSMLock to be called")
+	}
 }
 
 func TestValidTransitionMatrix(t *testing.T) {
@@ -176,60 +182,11 @@ func TestValidTransitionMatrix(t *testing.T) {
 	}
 }
 
-func TestHandleDetection_IllegalTransitionRoutesToDLQ(t *testing.T) {
-	store := testutil.NewMockStore()
-	pub := &testutil.MockPublisher{}
-	manager := NewManager(store, pub, okDiagnostics{}, "cp-test")
-	ctx := context.Background()
-
-	// Seed existing state as DIAGNOSTICS_TRIGGERED for worker-x:ECCBurst
-	_ = store.SetWorkerState(ctx, membership.WorkerState{
-		WorkerID:     "worker-x",
-		ErrorType:    string(state.FailureECCBurst),
-		IncidentID:   "inc_existing_999",
-		CurrentState: string(state.WorkerDiagnosticsTriggered),
-	})
-
-	// Try to detect again for worker-x:ECCBurst -> should attempt transition DIAGNOSTICS_TRIGGERED -> SUSPECTED, which is illegal
-	_, opened, err := manager.HandleDetection(ctx, state.DetectionResult{
-		WorkerID:      "worker-x",
-		FailureType:   state.FailureECCBurst,
-		Severity:      state.SeverityCritical,
-		Reason:        "ecc burst again",
-		ObservedAt:    time.Now().UTC(),
-		CorrelationID: "corr-ill",
-	})
-
-	if err == nil || opened {
-		t.Fatalf("expected illegal FSM transition error, got opened=%v err=%v", opened, err)
-	}
-
-	// Verify DLQ marker set in store
-	marker, _ := store.GetDLQMarker(ctx, "worker-x", string(state.FailureECCBurst))
-	if marker == "" {
-		t.Fatalf("expected DLQ marker to be set in Redis for worker-x:ECCBurst")
-	}
-
-	// Verify existing state remained untouched
-	existing, _ := store.GetWorkerState(ctx, "worker-x", string(state.FailureECCBurst))
-	if existing.CurrentState != string(state.WorkerDiagnosticsTriggered) {
-		t.Fatalf("expected existing state to remain DIAGNOSTICS_TRIGGERED, got %s", existing.CurrentState)
-	}
-
-	// Verify event published to DLQ topic
-	events := pub.Events()
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event in DLQ, got %d", len(events))
-	}
-	if events[0].Topic != TopicCorruptFSMDLQ {
-		t.Fatalf("expected topic %s, got %s", TopicCorruptFSMDLQ, events[0].Topic)
-	}
-}
 
 func TestHandleDetection_MissedHeartbeatReason(t *testing.T) {
 	store := testutil.NewMockStore()
 	pub := &testutil.MockPublisher{}
-	manager := NewManager(store, pub, okDiagnostics{}, "cp-test")
+	manager := NewManager(store, pub, okDiagnostics{}, "cp-test", time.Minute)
 	ctx := context.Background()
 
 	_, opened, err := manager.HandleDetection(ctx, state.DetectionResult{
@@ -258,5 +215,51 @@ func TestHandleDetection_MissedHeartbeatReason(t *testing.T) {
 	reason, ok := detectedEvent.Envelope.Payload["reason"].(string)
 	if !ok || reason != "Node failure suspected due to missed heartbeat min-heap expiry" {
 		t.Fatalf("unexpected reason in payload: %v", detectedEvent.Envelope.Payload["reason"])
+	}
+}
+
+func TestHandleDetection_IgnoresOnActiveFSM(t *testing.T) {
+	store := testutil.NewMockStore()
+	pub := &testutil.MockPublisher{}
+	manager := NewManager(store, pub, okDiagnostics{}, "cp-test", time.Minute)
+
+	// Pre-seed the store with an active incident (WorkerDelivered)
+	err := store.SetWorkerState(context.Background(), membership.WorkerState{
+		WorkerID:      "worker-loop",
+		ErrorType:     string(state.FailureLatencySpike),
+		IncidentID:    "inc_1234",
+		CurrentState:  string(state.WorkerDelivered),
+		CorrelationID: "corr-1",
+		UpdatedAt:     time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("failed to seed store: %v", err)
+	}
+
+	// Incoming telemetry for the same worker and error type
+	ts := time.Now().UTC()
+	inc, opened, err := manager.HandleDetection(context.Background(), state.DetectionResult{
+		WorkerID:      "worker-loop",
+		FailureType:   state.FailureLatencySpike,
+		Severity:      state.SeverityCritical,
+		Reason:        "latency is too high",
+		ObservedAt:    ts,
+		CorrelationID: "corr-2",
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if opened {
+		t.Fatalf("expected HandleDetection to ignore the failure and return opened=false when FSM is actively in DELIVERED state")
+	}
+
+	if inc.IncidentID != "" {
+		t.Fatalf("expected empty incident returned, got %v", inc)
+	}
+
+	if len(pub.Events()) > 0 {
+		t.Fatalf("expected 0 events published because the failure should be ignored, got %d", len(pub.Events()))
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/aegis/aegis/services/control-plane/internal/membership"
 	"github.com/aegis/aegis/services/control-plane/internal/server"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
+	"github.com/aegis/aegis/services/pkg/logger"
 	kafkago "github.com/segmentio/kafka-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -46,22 +47,20 @@ func main() {
 	if traceFile := os.Getenv("AEGIS_TRACE_FILE"); traceFile != "" {
 		f, err := os.Create(traceFile)
 		if err != nil {
-			slog.Error("failed to create trace file", "error", err)
+			slog.Error("failed to create trace file", "component", "MAIN", "event", "TRACE_ERR", "error", err)
 			os.Exit(1)
 		}
 		defer f.Close()
 		if err := trace.Start(f); err != nil {
-			slog.Error("failed to start trace", "error", err)
+			slog.Error("failed to start trace", "component", "MAIN", "event", "TRACE_ERR", "error", err)
 			os.Exit(1)
 		}
 		defer trace.Stop()
 	}
 
 	// Setup structured logging to stdout.
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-	slog.SetDefault(logger)
+	dbg := strings.ToLower(os.Getenv("AEGIS_DEBUG"))
+	logger.Setup(dbg == "true" || dbg == "1")
 
 	id := requireEnv("AEGIS_CP_ID")
 	address := requireEnv("AEGIS_CP_ADDRESS")
@@ -77,18 +76,18 @@ func main() {
 	member := hashring.Member{ID: id, Address: address}
 	now := time.Now().UTC()
 	if err := store.Register(context.Background(), member, 30*time.Second, now); err != nil {
-		slog.Error("failed to register CP member", "error", err)
+		slog.Error("failed to register CP member", "component", "MAIN", "event", "CP_REGISTER_ERR", "error", err)
 		os.Exit(1)
 	}
 	members, err := store.ActiveMembers(context.Background(), now)
 	if err != nil {
-		slog.Error("failed to find any active member which is needed to build the hashring", "error", err)
+		slog.Error("failed to find any active member which is needed to build the hashring", "component", "MAIN", "event", "CP_DISCOVERY_ERR", "error", err)
 		os.Exit(1)
 	}
 
 	ring, err := hashring.New(members, 128)
 	if err != nil {
-		slog.Error("failed to build hash ring", "error", err)
+		slog.Error("failed to build hash ring", "component", "MAIN", "event", "RING_BUILD_ERR", "error", err)
 		os.Exit(1)
 	}
 
@@ -98,9 +97,21 @@ func main() {
 		queueSize = 256
 	}
 
+	incidentIDTumblingWindowStr := os.Getenv("AEGIS_INCIDENT_ID_TUMBLING_WINDOW")
+	incidentIDTumblingWindow, err := time.ParseDuration(incidentIDTumblingWindowStr)
+	if err != nil || incidentIDTumblingWindow <= 0 {
+		incidentIDTumblingWindow = time.Minute
+	}
+
+	heartbeatExpiryStr := os.Getenv("AEGIS_HEARTBEAT_EXPIRY_SECONDS")
+	heartbeatExpiry, err := strconv.Atoi(heartbeatExpiryStr)
+	if err != nil || heartbeatExpiry <= 0 {
+		heartbeatExpiry = 15
+	}
+
 	publisher := kafka.NewKafkaPublisher(strings.Split(kafkaBrokers, ","))
-	manager := incident.NewManager(store, publisher, localDiagnostics{}, state.CreateProducerRef(id))
-	cp := server.New(id, address, ring, manager, queueSize, 15*time.Second)
+	manager := incident.NewManager(store, publisher, localDiagnostics{}, state.CreateProducerRef(id), incidentIDTumblingWindow)
+	cp := server.New(id, address, ring, manager, queueSize, time.Duration(heartbeatExpiry)*time.Second)
 
 	// Multiconcurrency for telemetry ingestion.
 	numWorkers := runtime.NumCPU()
@@ -132,11 +143,17 @@ func main() {
 	// gRPC server.
 	lis, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
-		slog.Error("failed to listen", "address", grpcAddress, "error", err)
+		slog.Error("failed to listen", "component", "GRPC_SERVER", "event", "LISTEN_ERR", "address", grpcAddress, "error", err)
 		os.Exit(1)
 	}
 
-	grpcServer := grpc.NewServer()
+	var serverOpts []grpc.ServerOption
+	if sizeStr := os.Getenv("AEGIS_GRPC_MAX_MSG_SIZE"); sizeStr != "" {
+		if size, err := strconv.Atoi(sizeStr); err == nil {
+			serverOpts = append(serverOpts, grpc.MaxRecvMsgSize(size))
+		}
+	}
+	grpcServer := grpc.NewServer(serverOpts...)
 	aegisv1.RegisterControlPlaneTelemetryServer(grpcServer, server.NewGRPCServer(cp))
 	if os.Getenv("AEGIS_DEBUG") == "true" {
 		reflection.Register(grpcServer)
@@ -153,15 +170,15 @@ func main() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 		<-sig
-		slog.Info("shutting down gRPC server")
+		slog.Info("shutting down gRPC server", "component", "GRPC_SERVER", "event", "SHUTDOWN")
 		healthServer.SetServingStatus("aegis.v1.ControlPlaneTelemetry", healthpb.HealthCheckResponse_NOT_SERVING)
 		grpcServer.GracefulStop()
 		cancel()
 	}()
 
-	slog.Info("aegis control-plane listening", "id", id, "address", grpcAddress, "protocol", "gRPC")
+	slog.Info("aegis control-plane listening", "component", "GRPC_SERVER", "event", "STARTING", "id", id, "address", grpcAddress, "protocol", "gRPC")
 	if err := grpcServer.Serve(lis); err != nil {
-		slog.Error("gRPC server exited", "error", err)
+		slog.Error("gRPC server exited", "component", "GRPC_SERVER", "event", "EXIT_ERR", "error", err)
 		os.Exit(1)
 	}
 }
@@ -178,7 +195,7 @@ func telemetryLoop(ctx context.Context, cp *server.ControlPlane) {
 			for {
 				processed, err := cp.ProcessOne(ctx)
 				if err != nil {
-					slog.Error("telemetry process error", "error", err)
+					slog.Error("telemetry process error", "component", "TELEMETRY_WORKER", "event", "PROCESS_ERR", "error", err)
 					break
 				}
 				if !processed {
@@ -214,7 +231,7 @@ func heartbeatLoop(ctx context.Context, cp *server.ControlPlane) {
 		case <-heartbeatTimer.C:
 			now := time.Now().UTC()
 			if err := cp.ExpireHeartbeats(ctx, now); err != nil {
-				slog.Error("heartbeat expiry error", "error", err)
+				slog.Error("heartbeat expiry error", "component", "HEARTBEAT_WORKER", "event", "EXPIRY_ERR", "error", err)
 			}
 
 			// Reset the timer to fire at the updated min-heap root deadline.
@@ -266,36 +283,56 @@ func membershipLoop(ctx context.Context, member hashring.Member, store membershi
 func requireEnv(key string) string {
 	value := os.Getenv(key)
 	if value == "" {
-		slog.Error("required environment variable missing", "key", key)
+		slog.Error("required environment variable missing", "component", "MAIN", "event", "ENV_ERR", "key", key)
 		os.Exit(1)
 	}
 	return value
 }
 
 func fsmConsumerLoop(ctx context.Context, consumer *incident.FSMConsumer, brokers []string, groupID string) {
-	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: brokers,
-		GroupTopics: []string{
-			incident.TopicPostmortemGenerated,
-			incident.TopicDeliveryStatus,
-			incident.TopicDeliveryDLQ,
-		},
-		GroupID: groupID,
-	})
-	defer reader.Close()
-
-	for {
-		m, err := reader.ReadMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Warn("fsmConsumerLoop: read message error", "error", err)
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		if err := consumer.ConsumeEvent(ctx, m.Topic, m.Value); err != nil {
-			slog.Error("fsmConsumerLoop: consume event error", "topic", m.Topic, "error", err)
-		}
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		DualStack: true,
+		KeepAlive: 30 * time.Second,
 	}
+
+	topics := []string{
+		incident.TopicPostmortemGenerated,
+		incident.TopicDeliveryStatus,
+		incident.TopicDeliveryDLQ,
+	}
+
+	for _, topic := range topics {
+		go func(t string) {
+			reader := kafkago.NewReader(kafkago.ReaderConfig{
+				Brokers:     brokers,
+				Topic:       t,
+				GroupID:     groupID,
+				StartOffset: kafkago.FirstOffset,
+				Dialer: &kafkago.Dialer{
+					Timeout:   dialer.Timeout,
+					DualStack: dialer.DualStack,
+					KeepAlive: dialer.KeepAlive,
+				},
+			})
+			defer reader.Close()
+
+			for {
+				m, err := reader.ReadMessage(ctx)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					slog.Warn("read message error", "component", "FSM_CONSUMER", "event", "KAFKA_READ_ERR", "topic", t, "error", err)
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				if err := consumer.ConsumeEvent(ctx, m.Topic, m.Value); err != nil {
+					slog.Error("consume event error", "component", "FSM_CONSUMER", "event", "CONSUME_ERR", "topic", m.Topic, "error", err)
+				}
+			}
+		}(topic)
+	}
+
+	<-ctx.Done()
 }

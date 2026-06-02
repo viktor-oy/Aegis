@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aegis/aegis/services/control-plane/internal/kafka"
-	"github.com/aegis/aegis/services/control-plane/internal/membership"
+
 	"github.com/aegis/aegis/services/control-plane/internal/state"
 )
 
@@ -35,8 +37,12 @@ func NewFSMConsumer(store Store, publisher kafka.Publisher, producer string) *FS
 
 // ConsumeEvent parses a Kafka message payload from downstream topics and updates Redis FSM state.
 func (c *FSMConsumer) ConsumeEvent(ctx context.Context, topic string, value []byte) error {
+	slog.Info("received event", "component", "FSM_CONSUMER", "event", "KAFKA_RECEIVE", "topic", topic, "payload_len", len(value))
 	if len(value) == 0 {
 		return nil
+	}
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.Debug("raw event payload", "component", "FSM_CONSUMER", "event", "KAFKA_RAW", "topic", topic, "payload", string(value))
 	}
 
 	switch topic {
@@ -52,7 +58,7 @@ func (c *FSMConsumer) ConsumeEvent(ctx context.Context, topic string, value []by
 				return c.handlePostmortemGenerated(ctx, value)
 			}
 		}
-		slog.Debug("fsm_consumer: ignored unhandled topic", "topic", topic)
+		slog.Debug("ignored unhandled topic", "component", "FSM_CONSUMER", "event", "KAFKA_IGNORED", "topic", topic)
 		return nil
 	}
 }
@@ -90,17 +96,68 @@ func (c *FSMConsumer) handlePostmortemGenerated(ctx context.Context, value []byt
 		}
 	}
 
-	if workerID == "" || errorType == "" {
-		slog.Warn("fsm_consumer: could not find active worker state for incident", "incident_id", incidentID)
+	if workerID == "" || errorType == "" || incidentID == "" {
+		slog.Warn("could not find active worker state for incident", "component", "FSM_CONSUMER", "event", "STATE_NOT_FOUND", "incident_id", incidentID)
+		return nil
+	}
+
+	if IsStale(ctx, c.store, workerID, errorType, incidentID) {
+		slog.Debug("ignoring stale kafka event for old incident", "component", "FSM_CONSUMER", "worker_id", workerID)
+		return nil
+	}
+
+	locked, err := c.store.AcquireFSMLock(ctx, workerID, errorType, incidentID, 5*time.Second)
+	if err != nil || !locked {
+		slog.Debug("could not acquire lock for postmortem generated, skipping", "worker_id", workerID, "error_type", errorType)
+		return nil
+	}
+	defer c.store.ReleaseFSMLock(ctx, workerID, errorType, incidentID)
+
+	if err := CheckDLQMarker(ctx, c.store, "Attempting to process postmortem generated event. Checking DLQ Marker.", "FSM_CONSUMER", "process_postmortem_generated", workerID, errorType, incidentID, correlationID); err != nil {
+		return nil
+	}
+
+	existing, err := c.store.GetWorkerState(ctx, workerID, errorType)
+	if err == nil && existing != nil && (existing.CurrentState == string(state.WorkerResolved) || existing.CurrentState == string(state.WorkerHealthy)) {
+		slog.Debug("ignoring late postmortem event because FSM is already resolved or healthy", "component", "FSM_CONSUMER", "worker_id", workerID, "incident_id", incidentID, "state", existing.CurrentState)
 		return nil
 	}
 
 	// Transition to POSTMORTEM_GENERATED
-	if err := c.transition(ctx, workerID, errorType, incidentID, correlationID, state.WorkerPostmortemGenerated); err != nil {
+	if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, correlationID, state.WorkerPostmortemGenerated); err != nil {
 		return err
 	}
 	// Immediately transition to DELIVERY_IN_PROGRESS as delivery starts right after postmortem generation
-	return c.transition(ctx, workerID, errorType, incidentID, correlationID, state.WorkerDeliveryInProgress)
+	if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, correlationID, state.WorkerDeliveryInProgress); err != nil {
+		return err
+	}
+
+	// Check for a deferred DELIVERED event that arrived out-of-order
+	deferredPayload, err := c.store.GetDeferredEvent(ctx, workerID, errorType, TopicDeliveryStatus)
+	if err == nil && len(deferredPayload) > 0 {
+		// TODO: see if single contract/schema is better
+		var p deliveryResultPayload
+		var defIncidentID string
+		if err := json.Unmarshal(deferredPayload, &p); err == nil && p.IncidentID != "" {
+			defIncidentID = p.IncidentID
+		} else {
+			var env state.EventEnvelope
+			if err := json.Unmarshal(deferredPayload, &env); err == nil && env.IncidentID != "" {
+				defIncidentID = env.IncidentID
+			}
+		}
+
+		if defIncidentID != "" && !IsStale(ctx, c.store, workerID, errorType, defIncidentID) {
+			slog.Info("found deferred DELIVERED event, fast-forwarding FSM", "component", "FSM_CONSUMER", "event", "DEFERRED_FOUND", "worker_id", workerID, "error_type", errorType)
+			_ = c.store.DeleteDeferredEvent(ctx, workerID, errorType, TopicDeliveryStatus)
+			return c.handleDeliveryStatus(ctx, TopicDeliveryStatus, deferredPayload)
+		} else {
+			slog.Warn("ignoring stale deferred DELIVERED event from old incident", "component", "FSM_CONSUMER", "event", "DEFERRED_STALE", "worker_id", workerID, "old_incident_id", defIncidentID, "current_incident_id", incidentID)
+			_ = c.store.DeleteDeferredEvent(ctx, workerID, errorType, TopicDeliveryStatus)
+		}
+	}
+
+	return nil
 }
 
 type deliveryResultPayload struct {
@@ -145,78 +202,77 @@ func (c *FSMConsumer) handleDeliveryStatus(ctx context.Context, topic string, va
 		}
 	}
 
-	if workerID == "" || errorType == "" {
-		slog.Warn("fsm_consumer: could not find active worker state for delivery result", "incident_id", incidentID, "topic", topic)
+	if workerID == "" || errorType == "" || incidentID == "" {
+		slog.Warn("could not find active worker state for delivery result", "component", "FSM_CONSUMER", "event", "DELIVERY_STATE_NOT_FOUND", "incident_id", incidentID, "topic", topic)
 		return nil
 	}
 
-	isDLQ := topic == TopicDeliveryDLQ || payload.Status == "dlq" || payload.Status == "failed"
+	if IsStale(ctx, c.store, workerID, errorType, incidentID) {
+		slog.Debug("ignoring stale kafka event for old incident", "component", "FSM_CONSUMER", "worker_id", workerID)
+		return nil
+	}
+
+	locked, err := c.store.AcquireFSMLock(ctx, workerID, errorType, incidentID, 5*time.Second)
+	// TODO: instead of simply returning nil which could signal that no err occured keep the FSM stuck indefinitely, we need to return a specific err signal for this err so that the caller of the method can do a retry e.g. the main.fsmconsumer_loop routine will prevent a kafka commit which effectively retries processing on next loop
+	// This has to be ensure throughout fsmconsumer, because loosing events that progresses the FSM is a fundamental flaw that reduces FSM efficacy, event though leaves FSM trustworthiness intact
+	if err != nil || !locked {
+		slog.Debug("could not acquire lock for delivery status, skipping", "worker_id", workerID, "error_type", errorType)
+		return nil
+	}
+	defer c.store.ReleaseFSMLock(ctx, workerID, errorType, incidentID)
+
+	if err := CheckDLQMarker(ctx, c.store, "Attempting to process delivery status event. Checking DLQ Marker.", "FSM_CONSUMER", "process_delivery_status", workerID, errorType, incidentID, payload.CorrelationID); err != nil {
+		return nil
+	}
+
+	existing, err := c.store.GetWorkerState(ctx, workerID, errorType)
+	if err == nil && existing != nil && (existing.CurrentState == string(state.WorkerResolved) || existing.CurrentState == string(state.WorkerHealthy)) {
+		slog.Debug("ignoring late delivery status event because FSM is already resolved or healthy", "component", "FSM_CONSUMER", "worker_id", workerID, "incident_id", incidentID, "state", existing.CurrentState)
+		return nil
+	}
+
+	isDLQ := topic == TopicDeliveryDLQ || payload.Status == "dlq"
 	if isDLQ {
-		if err := c.transition(ctx, workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDeliveryFailed); err != nil {
+		if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDeliveryFailed); err != nil {
 			return err
 		}
 	} else if payload.Status == "delivered" {
-		if err := c.transition(ctx, workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDelivered); err != nil {
+		fromState := state.WorkerHealthy
+		if existing != nil && existing.CurrentState != "" {
+			fromState = state.WorkerHealthState(existing.CurrentState)
+		}
+
+		if fromState == state.WorkerPostmortemRequested {
+			// Early DELIVERED event race condition! Defer it instead of corrupting the FSM.
+			ttlSec := 15*60 + 120 // 17 minutes default
+			if val := os.Getenv("AEGIS_FSM_DEFERRAL_TTL_SECONDS"); val != "" {
+				if i, err := strconv.Atoi(val); err == nil && i > 0 {
+					ttlSec = i
+				}
+			} else if val := os.Getenv("AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS"); val != "" {
+				// Fallback for backwards compatibility
+				if i, err := strconv.Atoi(val); err == nil && i > 0 {
+					ttlSec = i + 120
+				}
+			}
+			ttl := time.Duration(ttlSec) * time.Second
+			if err := c.store.DeferEvent(ctx, workerID, errorType, TopicDeliveryStatus, value, ttl); err != nil {
+				slog.Error("failed to defer early DELIVERED event", "component", "FSM_CONSUMER", "event", "DEFER_ERR", "error", err)
+			} else {
+				slog.Info("deferred early DELIVERED event to Redis", "component", "FSM_CONSUMER", "event", "DEFER_SUCCESS", "worker_id", workerID, "error_type", errorType)
+			}
+			return nil
+		}
+
+		if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDelivered); err != nil {
 			return err
 		}
 	} else {
-		slog.Debug("fsm_consumer: ignored non-terminal delivery status", "status", payload.Status)
+		slog.Debug("ignored non-terminal delivery status", "component", "FSM_CONSUMER", "event", "NON_TERMINAL_IGNORED", "status", payload.Status)
 		return nil
 	}
 
-	// Always transition to RESOLVED from DELIVERED or DELIVERY_FAILED
-	return c.transition(ctx, workerID, errorType, incidentID, payload.CorrelationID, state.WorkerResolved)
-}
-
-func (c *FSMConsumer) transition(ctx context.Context, workerID, errorType, incidentID, correlationID string, toState state.WorkerHealthState) error {
-	existing, err := c.store.GetWorkerState(ctx, workerID, errorType)
-	fromState := state.WorkerHealthy
-	if err == nil && existing != nil && existing.CurrentState != "" {
-		fromState = state.WorkerHealthState(existing.CurrentState)
-	}
-
-	// If already in target state or already RESOLVED, ignore idempotent retry
-	if fromState == toState || fromState == state.WorkerResolved {
-		return nil
-	}
-
-	if !ValidTransition(fromState, toState) {
-		slog.Error("fsm_consumer: illegal FSM transition rejected",
-			"metric", "aegis_fsm_illegal_transitions_total",
-			"worker_id", workerID,
-			"error_type", errorType,
-			"incident_id", incidentID,
-			"from_state", string(fromState),
-			"to_state", string(toState),
-			"correlation_id", correlationID,
-		)
-		errMsg := fmt.Sprintf("illegal FSM transition from %s to %s", fromState, toState)
-		_ = c.store.SetDLQMarker(ctx, workerID, errorType, errMsg)
-		inc := state.Incident{
-			IncidentID:    incidentID,
-			WorkerID:      workerID,
-			FailureType:   state.FailureType(errorType),
-			State:         fromState,
-			CorrelationID: correlationID,
-		}
-		if c.publisher != nil {
-			env := kafka.NewEnvelope("aegis.cp.fsm_illegal_transition", inc, c.producer, fmt.Sprintf("%s:%s", workerID, errorType), map[string]any{
-				"from_state": string(fromState),
-				"to_state":   string(toState),
-				"error":      errMsg,
-				"metric":     "aegis_fsm_illegal_transitions_total",
-			}, time.Now().UTC())
-			_ = c.publisher.Publish(ctx, TopicCorruptFSMDLQ, env)
-		}
-		return fmt.Errorf("illegal FSM transition from %s to %s for worker %s", fromState, toState, workerID)
-	}
-
-	return c.store.SetWorkerState(ctx, membership.WorkerState{
-		WorkerID:      workerID,
-		ErrorType:     errorType,
-		IncidentID:    incidentID,
-		CurrentState:  string(toState),
-		CorrelationID: correlationID,
-		UpdatedAt:     time.Now().UTC(),
-	})
+	// The automated FSM deliberately stops here.
+	// Transition to RESOLVED must be explicitly requested via aegis-cli
+	return nil
 }

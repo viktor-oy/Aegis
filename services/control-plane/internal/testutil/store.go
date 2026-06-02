@@ -14,8 +14,15 @@ type MockStore struct {
 	mu           sync.Mutex
 	leases       map[string]lease
 	locks        map[string]lock
-	workerStates map[string]membership.WorkerState
-	dlqMarkers   map[string]string
+	workerStates   map[string]membership.WorkerState
+	dlqMarkers     map[string]string
+	deferredEvents map[string]deferredEvent
+	acquireLockCalls int
+}
+
+type deferredEvent struct {
+	payload   []byte
+	expiresAt time.Time
 }
 
 type lease struct {
@@ -30,10 +37,12 @@ type lock struct {
 
 func NewMockStore() *MockStore {
 	return &MockStore{
-		leases:       map[string]lease{},
-		locks:        map[string]lock{},
-		workerStates: map[string]membership.WorkerState{},
-		dlqMarkers:   map[string]string{},
+		leases:         map[string]lease{},
+		locks:          map[string]lock{},
+		workerStates:   map[string]membership.WorkerState{},
+		dlqMarkers:     map[string]string{},
+		deferredEvents: map[string]deferredEvent{},
+		acquireLockCalls: 0,
 	}
 }
 
@@ -70,23 +79,32 @@ func (s *MockStore) ActiveMembers(_ context.Context, now time.Time) ([]hashring.
 	return members, nil
 }
 
-func (s *MockStore) AcquireIncidentLock(_ context.Context, workerID string, incidentID string, ttl time.Duration, now time.Time) (bool, error) {
+func (s *MockStore) AcquireFSMLock(_ context.Context, workerID string, errorType string, incidentID string, ttl time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, ok := s.locks[workerID]
-	if ok && now.Before(current.expiresAt) && current.incidentID != incidentID {
+	s.acquireLockCalls++
+	key := workerID + ":" + errorType
+	current, ok := s.locks[key]
+	if ok && time.Now().Before(current.expiresAt) && current.incidentID != incidentID {
 		return false, nil
 	}
-	s.locks[workerID] = lock{incidentID: incidentID, expiresAt: now.Add(ttl)}
+	s.locks[key] = lock{incidentID: incidentID, expiresAt: time.Now().Add(ttl)}
 	return true, nil
 }
 
-func (s *MockStore) ReleaseIncidentLock(_ context.Context, workerID string, incidentID string) error {
+func (s *MockStore) AcquireLockCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, ok := s.locks[workerID]
+	return s.acquireLockCalls
+}
+
+func (s *MockStore) ReleaseFSMLock(_ context.Context, workerID string, errorType string, incidentID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := workerID + ":" + errorType
+	current, ok := s.locks[key]
 	if ok && current.incidentID == incidentID {
-		delete(s.locks, workerID)
+		delete(s.locks, key)
 	}
 	return nil
 }
@@ -163,4 +181,61 @@ func (s *MockStore) ListDLQMarkers(_ context.Context) ([]string, error) {
 		markers = append(markers, key)
 	}
 	return markers, nil
+}
+
+func (s *MockStore) DeferEvent(_ context.Context, workerID string, errorType string, eventType string, payload []byte, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	s.deferredEvents[key] = deferredEvent{
+		payload:   payload,
+		expiresAt: time.Now().Add(ttl),
+	}
+	return nil
+}
+
+func (s *MockStore) GetDeferredEvent(_ context.Context, workerID string, errorType string, eventType string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	event, ok := s.deferredEvents[key]
+	if !ok || time.Now().After(event.expiresAt) {
+		return nil, nil
+	}
+	return event.payload, nil
+}
+
+func (s *MockStore) DeleteDeferredEvent(_ context.Context, workerID string, errorType string, eventType string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	delete(s.deferredEvents, key)
+	return nil
+}
+
+func (s *MockStore) ScanExpiringDeferredEvents(_ context.Context, tolerance time.Duration) ([]membership.WorkerState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	now := time.Now()
+	var states []membership.WorkerState
+	
+	// Mock Store doesn't perfectly simulate Redis string splits easily without importing strings,
+	// but we can parse the key manually for testing purposes or just mock it.
+	// We'll import strings if we need to. Wait, testutil/store.go doesn't import strings yet.
+	// I should import strings. I'll do that in another block.
+	for key, event := range s.deferredEvents {
+		ttl := event.expiresAt.Sub(now)
+		if ttl >= 0 && ttl < tolerance {
+			// Extract workerID and errorType from "aegis:defer:<workerID>:<errorType>:<eventType>"
+			// I'll parse it simply assuming the mock is only used for tests that create proper keys.
+			var prefix, workerID, errorType, eventType string
+			fmt.Sscanf(key, "%s:%s:%s:%s:%s", &prefix, &prefix, &workerID, &errorType, &eventType)
+			states = append(states, membership.WorkerState{
+				WorkerID:  workerID,
+				ErrorType: errorType,
+			})
+		}
+	}
+	return states, nil
 }

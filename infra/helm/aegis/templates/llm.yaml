@@ -19,9 +19,9 @@ spec:
         {{- include "aegis.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: llm
     spec:
-      {{- if .Values.llm.securityContext }}
+      {{- if .Values.llm.podSecurityContext }}
       securityContext:
-        {{- toYaml .Values.llm.securityContext | nindent 8 }}
+        {{- toYaml .Values.llm.podSecurityContext | nindent 8 }}
       {{- end }}
       containers:
         - name: ollama

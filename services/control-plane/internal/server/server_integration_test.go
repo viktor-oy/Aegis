@@ -10,6 +10,7 @@ import (
 	"time"
 
 	aegisv1 "github.com/aegis/aegis/gen/go/aegis/v1"
+	"github.com/aegis/aegis/services/control-plane/internal/membership"
 	"github.com/aegis/aegis/services/control-plane/internal/state"
 	"github.com/aegis/aegis/services/control-plane/internal/testutil"
 	"github.com/aegis/aegis/tests/integration/testutils"
@@ -145,6 +146,7 @@ func assertNoEvents(t *testing.T, brokers []string, workerID string, topic strin
 
 func TestIntegration_StreamTelemetry_Accepted(t *testing.T) {
 	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -179,6 +181,7 @@ func TestIntegration_StreamTelemetry_Accepted(t *testing.T) {
 
 func TestIntegration_StreamTelemetry_Redirect(t *testing.T) {
 	testutils.WipeTestState(t, "redis")
+
 	// Two CP members; worker hashing will route to one of them.
 	client := globalClients[0]
 
@@ -216,7 +219,8 @@ func TestIntegration_StreamTelemetry_Redirect(t *testing.T) {
 }
 
 func TestIntegration_StreamTelemetry_ResourceExhausted(t *testing.T) {
-	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected,aegis.diagnostics.requested")
+	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	// Since queue size is 256 globally, we need to flood the queue to exhaust it.
@@ -287,7 +291,8 @@ func TestIntegration_StreamTelemetry_ResourceExhausted(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
-	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected")
+	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -346,7 +351,8 @@ func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
-	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected,aegis.diagnostics.requested")
+	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -379,7 +385,8 @@ func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_ModelUnhealthyImmediate(t *testing.T) {
-	testutils.WipeTestState(t, "redis kafka:aegis.incident.detected")
+	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	stream, err := client.StreamTelemetry(context.Background())
@@ -415,6 +422,7 @@ func TestIntegration_TelemetryProcessing_ModelUnhealthyImmediate(t *testing.T) {
 
 func TestIntegration_SubmitDiagnostics_Accepted(t *testing.T) {
 	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	ack, err := client.SubmitDiagnostics(context.Background(), &aegisv1.DiagnosticBundle{
@@ -433,7 +441,8 @@ func TestIntegration_SubmitDiagnostics_Accepted(t *testing.T) {
 }
 
 func TestIntegration_SubmitDiagnostics_InvalidArgument(t *testing.T) {
-	testutils.WipeTestState(t, "")
+	testutils.WipeTestState(t, "redis")
+
 	client := globalClients[0]
 
 	// Missing required fields.
@@ -445,4 +454,44 @@ func TestIntegration_SubmitDiagnostics_InvalidArgument(t *testing.T) {
 	if !ok || st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
+}
+
+func TestIntegration_HandleDetection_CorruptFSM_DropsTelemetry(t *testing.T) {
+	testutils.WipeTestState(t, "redis")
+
+	// 1. Manually insert a DLQ marker for a worker in Redis.
+	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
+	store := membership.NewRedisStore(testutils.DefaultRedisAddr)
+	if err := store.SetDLQMarker(context.Background(), workerID, string(state.FailureLatencySpike), "manual corrupt marker"); err != nil {
+		t.Fatalf("failed to set DLQ marker: %v", err)
+	}
+
+	// 2. Send telemetry for that worker.
+	client := globalClients[0]
+	stream, err := client.StreamTelemetry(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stream.Send(&aegisv1.AgentTelemetry{
+		WorkerId:             workerID,
+		Timestamp:            time.Now().UTC().Format(time.RFC3339Nano),
+		ModelServerHealthy:   true,
+		SyntheticFailure:     string(state.FailureLatencySpike),
+		CorrelationId:        "corr-drop-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.DirectiveType != "accepted" {
+		t.Fatalf("expected accepted, got %s", resp.DirectiveType)
+	}
+
+	// 3. Wait briefly to allow async processing, then verify NO incident detected event was emitted.
+	time.Sleep(2 * time.Second)
+	assertNoEvents(t, testutils.DefaultKafkaBrokers, workerID, "aegis.incident.detected")
 }

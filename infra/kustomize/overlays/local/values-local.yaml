@@ -6,16 +6,23 @@ agent:
   image: "aegis-agent:latest"
   imagePullPolicy: Never
   simulationMode: "normal"
+  securityContext:
+    readOnlyRootFilesystem: false
 
 composer:
   replicaCount: 3
   image: "aegis-composer:latest"
   imagePullPolicy: Never
+  securityContext:
+    readOnlyRootFilesystem: false
 
 controlPlane:
   replicaCount: 5
   image: "aegis-control-plane:latest"
   imagePullPolicy: Never
+  debug: "true"
+  securityContext:
+    readOnlyRootFilesystem: false
 
 sink:
   replicaCount: 3
@@ -23,6 +30,16 @@ sink:
   imagePullPolicy: Never
   fileSink:
     enabled: true
+  emailSink:
+    enabled: true
+    smtpHost: "aegis-mailpit-smtp.aegis-system.svc.cluster.local"
+    smtpPort: "25"
+    smtpUser: ""
+    smtpPass: ""
+    smtpTo: "sre-oncall@aegis.local"
+    smtpFrom: "aegis-sink@aegis.local"
+  securityContext:
+    readOnlyRootFilesystem: false
 
 kafka:
   enabled: true
@@ -37,14 +54,14 @@ kafka:
       protocol: PLAINTEXT
   controller:
     replicaCount: 3
+    heapOpts: "-Xmx768m -Xms768m"
     # Override the chart's default 500m CPU request so all 3 pods fit on the single kind node.
     resources:
       requests:
         cpu: 10m
         memory: 512Mi
       limits:
-        cpu: 750m
-        memory: 768Mi
+        memory: 1536Mi
   externalAccess:
     enabled: true
     controller:
@@ -53,7 +70,7 @@ kafka:
         type: NodePort
         ports:
           external: 9094
-        nodePorts: [30094, 30095, 30096]
+        nodePorts: [30090, 30091, 30092]
     resources:
       requests:
         cpu: 10m

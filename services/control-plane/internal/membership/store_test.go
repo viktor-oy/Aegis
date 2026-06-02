@@ -106,26 +106,25 @@ func TestDLQMarkerLifecycle(t *testing.T) {
 func TestReleaseIncidentLock(t *testing.T) {
 	store := testutil.NewMockStore()
 	ctx := context.Background()
-	now := time.Now()
 
-	ok, err := store.AcquireIncidentLock(ctx, "worker-10", "inc-999", 10*time.Second, now)
+	ok, err := store.AcquireFSMLock(ctx, "worker-10", "temperature_spike", "inc-999", 10*time.Second)
 	if err != nil || !ok {
 		t.Fatalf("failed to acquire incident lock")
 	}
 
 	// Should not be able to acquire with a different incident ID
-	ok, err = store.AcquireIncidentLock(ctx, "worker-10", "inc-other", 10*time.Second, now)
+	ok, err = store.AcquireFSMLock(ctx, "worker-10", "temperature_spike", "inc-other", 10*time.Second)
 	if err != nil || ok {
 		t.Fatalf("expected lock acquisition to fail for different incidentID")
 	}
 
 	// Release with matching incidentID
-	if err := store.ReleaseIncidentLock(ctx, "worker-10", "inc-999"); err != nil {
+	if err := store.ReleaseFSMLock(ctx, "worker-10", "temperature_spike", "inc-999"); err != nil {
 		t.Fatalf("ReleaseIncidentLock failed: %v", err)
 	}
 
 	// Should now succeed with new incident ID
-	ok, err = store.AcquireIncidentLock(ctx, "worker-10", "inc-other", 10*time.Second, now)
+	ok, err = store.AcquireFSMLock(ctx, "worker-10", "temperature_spike", "inc-other", 10*time.Second)
 	if err != nil || !ok {
 		t.Fatalf("expected lock acquisition to succeed after release")
 	}

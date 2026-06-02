@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	DefaultRedisAddr    = "localhost:6379"
-	DefaultKafkaBrokers = []string{"localhost:9094"}
+	DefaultRedisAddr    = "localhost:36380"
+	DefaultKafkaBrokers = []string{"localhost:39093"}
 )
 
 // GetProjectRoot finds the root directory of the project by looking for the Makefile.
@@ -57,7 +57,7 @@ func WipeTestState(t *testing.T, targets string) {
 
 	args := []string{"wipe-infra-state"}
 	if targets != "" {
-		args = append(args, "TARGETS=" + targets)
+		args = append(args, "TARGETS="+targets)
 	}
 
 	cmd := exec.Command("make", args...)

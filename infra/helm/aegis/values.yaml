@@ -12,6 +12,7 @@ agent:
   bootstrapUrls: "aegis-control-plane:50051"
   workerIdFormat: "$(POD_NAMESPACE)--$(POD_NAME)"
   apiPort: 8080
+  heartbeatIntervalSeconds: 15
   resources:
     requests:
       cpu: 10m
@@ -67,6 +68,13 @@ controlPlane:
   grpcPort: 50051
   redisAddr: "aegis-redis-master.aegis-system.svc.cluster.local:6379"
   kafkaBrokers: "aegis-kafka.aegis-system.svc.cluster.local:9092"
+  debug: "false"
+  queueSize: 256
+  watchdogStuckThresholdSeconds: 900
+  deferralTtlSeconds: 1020
+  deferralToleranceSeconds: 120
+  incidentIDTumblingWindow: "1m"
+  heartbeatExpirySeconds: 30
   resources:
     requests:
       cpu: 10m
@@ -91,7 +99,9 @@ sink:
   debug: "false"
   fileSink:
     enabled: false
-    path: "/docs/postmortems"
+    path: "/tmp/aegis-postmortems"
+  emailSink:
+    enabled: false
   resources:
     requests:
       cpu: 10m

@@ -37,13 +37,21 @@ func NewWatchdog(store Store, publisher kafka.Publisher, producer string, cpID s
 			intervalSec = i
 		}
 	}
+	
+	thresholdSec := 15 * 60 // 15 minutes default
+	if val := os.Getenv("AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS"); val != "" {
+		if i, err := strconv.Atoi(val); err == nil && i > 0 {
+			thresholdSec = i
+		}
+	}
+
 	return &Watchdog{
 		store:          store,
 		publisher:      publisher,
 		producer:       producer,
 		cpID:           cpID,
 		interval:       time.Duration(intervalSec) * time.Second,
-		stuckThreshold: 15 * time.Minute,
+		stuckThreshold: time.Duration(thresholdSec) * time.Second,
 	}
 }
 
@@ -95,7 +103,7 @@ func (w *Watchdog) InspectOnce(ctx context.Context, now time.Time) (int, int, er
 		elapsed := now.Sub(refTime)
 		if elapsed >= w.stuckThreshold {
 			stuckCount++
-			slog.Warn("fsm_watchdog: stuck incident detected",
+			slog.Warn("stuck incident detected", "component", "WATCHDOG", "event", "STUCK_INCIDENT",
 				"metric", "aegis_fsm_stuck_incident",
 				"worker_id", st.WorkerID,
 				"error_type", st.ErrorType,
@@ -138,7 +146,7 @@ func (w *Watchdog) InspectOnce(ctx context.Context, now time.Time) (int, int, er
 		}
 
 		corruptCount++
-		slog.Warn("fsm_watchdog: corrupt FSM marker detected in Redis",
+		slog.Warn("corrupt FSM marker detected in Redis", "component", "WATCHDOG", "event", "CORRUPT_FSM",
 			"metric", "aegis_fsm_corrupt_marker_detected",
 			"marker", m,
 		)
@@ -153,6 +161,64 @@ func (w *Watchdog) InspectOnce(ctx context.Context, now time.Time) (int, int, er
 				"metric": "aegis_fsm_corrupt_marker_detected",
 			}, now)
 			_ = w.publisher.Publish(ctx, TopicCorruptFSMDLQ, env)
+		}
+	}
+
+	toleranceSec := 120
+	if val := os.Getenv("AEGIS_FSM_DEFERRAL_TOLERANCE_SECONDS"); val != "" {
+		if i, err := strconv.Atoi(val); err == nil && i > 0 {
+			toleranceSec = i
+		}
+	}
+	expiringDeferrals, err := w.store.ScanExpiringDeferredEvents(ctx, time.Duration(toleranceSec)*time.Second)
+	if err != nil {
+		return stuckCount, corruptCount, fmt.Errorf("fsm_watchdog: scan expiring deferrals: %w", err)
+	}
+
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.Debug("scanned expiring deferrals", "component", "WATCHDOG", "event", "DEFERRALS_SCANNED", "count", len(expiringDeferrals))
+	} else if len(expiringDeferrals) > 0 {
+		slog.Info("scanned expiring deferrals", "component", "WATCHDOG", "event", "DEFERRALS_SCANNED", "count", len(expiringDeferrals))
+	}
+
+	for _, d := range expiringDeferrals {
+		if ring != nil {
+			owner, ok := ring.Owner(d.WorkerID)
+			if ok && owner.ID != w.cpID {
+				continue // not owned by this CP
+			}
+		}
+
+		slog.Warn("deferred FSM event is expiring without prerequisites", "component", "WATCHDOG", "event", "DEFERRAL_EXPIRING",
+			"worker_id", d.WorkerID,
+			"error_type", d.ErrorType,
+		)
+
+		errMsg := fmt.Sprintf("FSM Corruption: deferred %s event expired without receiving prerequisite %s", state.WorkerDelivered, state.WorkerPostmortemGenerated)
+		
+		var inc state.Incident
+		inc.WorkerID = d.WorkerID
+		inc.FailureType = state.FailureType(d.ErrorType)
+		inc.State = state.WorkerHealthy
+		for _, st := range states {
+			if st.WorkerID == d.WorkerID && st.ErrorType == d.ErrorType {
+				inc.IncidentID = st.IncidentID
+				inc.CorrelationID = st.CorrelationID
+				inc.State = state.WorkerHealthState(st.CurrentState)
+				break
+			}
+		}
+
+		if inc.IncidentID != "" && IsStale(ctx, w.store, d.WorkerID, d.ErrorType, inc.IncidentID) {
+			slog.Debug("ignoring stale expiring deferral", "component", "WATCHDOG", "worker_id", d.WorkerID, "incident_id", inc.IncidentID)
+			_ = w.store.DeleteDeferredEvent(ctx, d.WorkerID, d.ErrorType, TopicDeliveryStatus)
+			continue
+		}
+
+		if err := MarkFSMCorrupt(ctx, w.store, w.publisher, w.producer, inc, state.WorkerDelivered, errMsg, map[string]any{"deferred": true}); err != nil {
+			slog.Error("failed to mark FSM as corrupt", "component", "WATCHDOG", "event", "MARK_CORRUPT_ERR", "worker_id", d.WorkerID, "error_type", d.ErrorType, "error", err)
+		} else {
+			slog.Info("successfully marked FSM as corrupt", "component", "WATCHDOG", "event", "MARK_CORRUPT_SUCCESS", "worker_id", d.WorkerID, "error_type", d.ErrorType)
 		}
 	}
 

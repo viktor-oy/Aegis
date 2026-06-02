@@ -5,6 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY gen ./gen
 COPY services/control-plane ./services/control-plane
+COPY services/pkg ./services/pkg
 RUN go build -o /out/aegis-control-plane ./services/control-plane
 
 FROM gcr.io/distroless/base-debian12:nonroot
@@ -25,3 +26,4 @@ ENV AEGIS_DEBUG=
 USER nonroot:nonroot
 EXPOSE 50051
 ENTRYPOINT ["/aegis-control-plane"]
+# Force rebuild

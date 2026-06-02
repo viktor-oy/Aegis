@@ -30,3 +30,7 @@ mailpit:
 
 llm:
   enabled: true
+
+global:
+  security:
+    allowInsecureImages: true

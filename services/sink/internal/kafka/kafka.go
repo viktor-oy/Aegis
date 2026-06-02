@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/aegis/aegis/services/sink/internal/types"
@@ -14,15 +15,25 @@ import (
 
 type Publisher struct {
 	writer *kafka.Writer
-	logger *slog.Logger
 }
 
-func NewPublisher(brokers []string, logger *slog.Logger) *Publisher {
+func NewPublisher(brokers []string) *Publisher {
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		DualStack: true,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &kafka.Transport{
+		Dial: dialer.DialContext,
+	}
+
 	w := &kafka.Writer{
 		Addr:                   kafka.TCP(brokers...),
+		Transport:              transport,
 		AllowAutoTopicCreation: false,
 	}
-	return &Publisher{writer: w, logger: logger}
+	return &Publisher{writer: w}
 }
 
 func (p *Publisher) PublishStatus(ctx context.Context, topic string, result types.Result) error {
@@ -40,15 +51,15 @@ func (p *Publisher) PublishStatus(ctx context.Context, topic string, result type
 		if err == nil {
 			break
 		}
-		p.logger.Warn("Failed to publish status, retrying...", "topic", topic, "error", err, "attempt", i+1)
+		slog.Warn("Failed to publish status, retrying...", "component", "KAFKA", "event", "PUBLISH_RETRY", "topic", topic, "error", err, "attempt", i+1)
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	if err != nil {
-		p.logger.Error("Failed to publish status after retries", "topic", topic, "incident_id", result.IncidentID, "error", err)
+		slog.Error("Failed to publish status after retries", "component", "KAFKA", "event", "PUBLISH_ERR", "topic", topic, "incident_id", result.IncidentID, "error", err)
 		return err
 	}
-	p.logger.Debug("Published delivery status", "topic", topic, "incident_id", result.IncidentID, "status", result.Status)
+	slog.Debug("Published delivery status", "component", "KAFKA", "event", "PUBLISH_SUCCESS", "topic", topic, "incident_id", result.IncidentID, "status", result.Status)
 	return nil
 }
 

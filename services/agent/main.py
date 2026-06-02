@@ -11,13 +11,7 @@ from .client import ControlPlaneDiscovery
 from .config import AgentConfig
 from .diagnostics import DiagnosticBuffer
 from .telemetry import GPUTelemetryCollector, SyntheticCollector, build_collector
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
-)
-logger = logging.getLogger(__name__)
+from services.pkg.pylogger.logger import logger
 
 
 async def run_grpc_stream(
@@ -30,7 +24,7 @@ async def run_grpc_stream(
 
     while True:
         target = discovery.next_target()
-        logger.info(f"Attempting to connect to Control Plane at {target}")
+        logger.info(f"Attempting to connect to Control Plane at {target}", extra={"component": "GRPC_CLIENT", "event": "CONNECT_ATTEMPT", "target": target})
         
         try:
             async with grpc.aio.insecure_channel(target) as channel:
@@ -38,7 +32,7 @@ async def run_grpc_stream(
                 # (timeout to prevent hanging)
                 try:
                     await asyncio.wait_for(channel.channel_ready(), timeout=5.0)
-                    logger.info(f"Successfully connected to Control Plane network at {target}")
+                    logger.info(f"Successfully connected to Control Plane network at {target}", extra={"component": "GRPC_CLIENT", "event": "CONNECT_SUCCESS", "target": target})
                 except TimeoutError as exc:
                     raise Exception("Connection timed out waiting for channel readiness") from exc
                 
@@ -52,7 +46,7 @@ async def run_grpc_stream(
                             diagnostics.add_event(
                                 "telemetry_collection_failed", {"error": str(exc)}
                             )
-                            logger.error(f"Telemetry collection failed: {exc}")
+                            logger.error(f"Telemetry collection failed: {exc}", extra={"component": "TELEMETRY", "event": "COLLECT_ERR", "error": str(exc)})
                             sample = None
                             
                         if sample is not None:
@@ -74,7 +68,7 @@ async def run_grpc_stream(
                                     correlation_id=sample.correlation_id or "",
                                 )
                             except Exception as ex:
-                                logger.error(f"Failed to create AgentTelemetry: {ex}")
+                                logger.error(f"Failed to create AgentTelemetry: {ex}", extra={"component": "TELEMETRY", "event": "CREATE_ERR", "error": str(ex)})
                                 raise
                         else:
                             diagnostics.add_event(
@@ -91,17 +85,29 @@ async def run_grpc_stream(
                     if response.directive_type == "redirect":
                         owner_hint = getattr(response, "owner_hint", None)
                         if owner_hint:
-                            logger.info(f"Redirected by {target} to {owner_hint}")
+                            logger.info(f"Redirected by {target} to {owner_hint}", extra={"component": "GRPC_CLIENT", "event": "REDIRECTED", "from": target, "to": owner_hint})
                             discovery.redirect(owner_hint)
                             call.cancel()
                             break
                     elif response.directive_type == "accepted":
-                        logger.info(f"Telemetry accepted by Control Plane owner at {target}")
+                        corr_id = getattr(response, "correlation_id", "")
+                        err_type = getattr(collector, "mode", "") if hasattr(collector, "mode") else ""
+                        logger.info(
+                            f"Telemetry accepted by Control Plane owner at {target}", 
+                            extra={
+                                "component": "GRPC_CLIENT", 
+                                "event": "TELEMETRY_ACCEPTED", 
+                                "target": target,
+                                "correlation_id": corr_id,
+                                "error_type": err_type
+                            }
+                        )
                         discovery.accept(target)
         except grpc.aio.AioRpcError as e:
             delay = discovery.owner_failed()
             logger.warning(
-                f"gRPC connection to {target} failed: {e.code()}. Backing off for {delay:.2f}s"
+                f"gRPC connection to {target} failed: {e.code()}. Backing off for {delay:.2f}s",
+                extra={"component": "GRPC_CLIENT", "event": "CONNECT_ERR", "target": target, "delay": delay}
             )
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
@@ -109,7 +115,8 @@ async def run_grpc_stream(
         except Exception as e:
             delay = discovery.owner_failed()
             logger.error(
-                f"Unexpected error communicating with {target}: {e}. Backing off for {delay:.2f}s"
+                f"Unexpected error communicating with {target}: {e}. Backing off for {delay:.2f}s",
+                extra={"component": "GRPC_CLIENT", "event": "UNEXPECTED_ERR", "target": target, "delay": delay, "error": str(e)}
             )
             await asyncio.sleep(delay)
 
@@ -127,7 +134,8 @@ async def async_main() -> None:
 
     logger.info(
         f"aegis-agent starting worker_id={config.worker_id} "
-        f"telemetry_data_source={config.telemetry_data_source}"
+        f"telemetry_data_source={config.telemetry_data_source}",
+        extra={"component": "MAIN", "event": "AGENT_START", "worker_id": config.worker_id, "data_source": config.telemetry_data_source}
     )
 
     grpc_task = asyncio.create_task(run_grpc_stream(config, collector, diagnostics))
@@ -143,7 +151,7 @@ def main() -> int:
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
-        logger.info("aegis-agent shut down requested")
+        logger.info("aegis-agent shut down requested", extra={"component": "MAIN", "event": "SHUTDOWN_REQUESTED"})
     return 0
 
 if __name__ == "__main__":

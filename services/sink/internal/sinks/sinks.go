@@ -17,7 +17,6 @@ import (
 
 type FileSink struct {
 	Directory string
-	Logger    *slog.Logger
 	mu        sync.Mutex
 }
 
@@ -48,12 +47,7 @@ func (s *FileSink) Deliver(_ context.Context, postmortem types.Postmortem) (stri
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
-	if s.Logger != nil {
-		// Log to screen to satisfy "printed to screen" requirement
-		s.Logger.Info("Saved postmortem to file", "path", filePath)
-	} else {
-		fmt.Printf("Saved postmortem to file: %s\n", filePath)
-	}
+	slog.Info("Saved postmortem to file", "component", "SINK_DELIVERY", "event", "FILE_DELIVERY_SUCCESS", "path", filePath)
 
 	return "file://" + filePath, nil
 }
@@ -65,7 +59,6 @@ type EmailSink struct {
 	Password     string
 	To           string
 	From         string
-	Logger       *slog.Logger
 	SendMailFunc func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
 }
 
@@ -87,10 +80,7 @@ func (s *EmailSink) Deliver(_ context.Context, postmortem types.Postmortem) (str
 	mime := "MIME-version: 1.0;\nContent-Type: text/plain; charset=\"UTF-8\";\n\n"
 	body := subject + mime + postmortem.Markdown
 
-	if s.Logger != nil {
-		// Log the email content to stdout at debug level so it won't show in production
-		s.Logger.Debug("Sending email", "to", s.To, "from", s.From, "subject", subject, "body", postmortem.Markdown)
-	}
+	slog.Debug("Sending email", "component", "SINK_DELIVERY", "event", "EMAIL_SENDING", "to", s.To, "from", s.From, "subject", subject)
 
 	var auth smtp.Auth
 	if s.Username != "" && s.Password != "" {

@@ -1,0 +1,90 @@
+name: "Missed Heartbeat Detection Scenario"
+description: "Simulates an agent crash and verifies the Control Plane's Watchdog catches the missed heartbeat and generates an incident."
+cluster:
+  config:
+    env_overrides:
+      - target: "DaemonSet/aegis-agent"
+        envs:
+          AEGIS_HEARTBEAT_INTERVAL_SECONDS: "3"
+      - target: "StatefulSet/aegis-control-plane"
+        envs:
+          AEGIS_HEARTBEAT_EXPIRY_SECONDS: "7"
+          AEGIS_FSM_WATCHDOG_INTERVAL_SECONDS: "5"
+          
+          AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS: "45"
+          AEGIS_FSM_DEFERRAL_TTL_SECONDS: "30"
+          AEGIS_FSM_DEFERRAL_TOLERANCE_SECONDS: "7"
+  resources:
+    # IMPORTANT NOTE: if count is modified, then ensure various replicas field below are correct
+    cp:
+      count: 3
+    node:
+      # determines Agent(daemonset) worker count
+      count: 3
+    sink:
+      count: 2
+    composer:
+      count: 2
+chain:
+  - action: "print"
+    message: "Suspending agent to simulate a node crash..."
+  
+  - action: "suspend_workload"
+    stage_id: "suspend_agent_1"
+    workload: "DaemonSet/aegis-agent"
+    replicas: 1
+    
+  - action: "print"
+    message: "Waiting 15 seconds for CP to declare a missed heartbeat..."
+    
+  - action: "pause"
+    color: "green"
+    message: "Check Tilt UI! Missed heartbeat incident should be triggered. Press Enter to restore the agent..."
+    show_urls_with_regex: '(?!.*\[KAFKA_RECEIVE|.*\[KAFKA_RAW|.*\[DEFERRALS_SCANNED).*?(FSM|missed_heartbeat|incident)'
+    
+  - action: "print"
+    message: "Restoring agent to healthy state (resuming DaemonSet)..."
+    
+  - action: "resume_workload"
+    workload: "DaemonSet/aegis-agent"
+    always_run: true
+    always_run_depends_on: "suspend_agent_1"
+    continue_on_err: true
+    
+  - action: "pause"
+    color: "yellow"
+    message: >-
+      Press Enter for the FSM to finish naturally instead of using aegis-cli --force here, 
+      because using the cli to stop the stuck alert while the FSM is progressing will cause an illegal 
+      transition (RESOLVED/HEALTHY(terminal states set by aegiscli) -> <ANY STATE>) and corrupt the FSM!
+
+  - action: "print"
+    message: "Waiting for the FSM to reach DELIVERED state naturally..."
+    
+  - action: "wait_for_fsm_state"
+    stage_id: "wait_fsm_1"
+    target_ref_id: "suspend_agent_1"
+    error_type: "missed_heartbeat"
+    expected_state: "DELIVERED"
+    timeout_ms: 150000
+    always_run: true
+    always_run_depends_on: "suspend_agent_1"
+    continue_on_err: false
+
+  - action: "print"
+    message: "FSM reached DELIVERED successfully! Now running SRE-CLI to formally resolve it..."
+    always_run: true
+    always_run_depends_on: "wait_fsm_1"
+    continue_on_err: true
+    
+  - action: "aegis-cli"
+    target_ref_id: "suspend_agent_1"
+    error_type: "missed_heartbeat"
+    args: []
+    always_run: true
+    always_run_depends_on: "wait_fsm_1"
+    continue_on_err: true
+      
+  - action: "pause"
+    color: "green"
+    message: "Resolution complete. Incident should now be healthy in Tilt. Press Enter to finish."

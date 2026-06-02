@@ -60,7 +60,11 @@ func TestWorker_Deliver(t *testing.T) {
 		t.Errorf("expected 2 attempts for sink2, got %d", results[1].Attempts)
 	}
 
-	if len(pub.Records) != 2 {
-		t.Fatalf("expected 2 published statuses, got %d", len(pub.Records))
+	if len(pub.Records) != 1 {
+		t.Fatalf("expected 1 published status, got %d", len(pub.Records))
+	}
+	
+	if pub.Records[0].Result.Status != "delivered" {
+		t.Errorf("expected aggregated status to be delivered, got %s", pub.Records[0].Result.Status)
 	}
 }

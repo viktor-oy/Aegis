@@ -24,3 +24,14 @@ docs/services/*/local
 
 # Ignore downloaded Helm chart dependencies
 infra/helm/*/charts/*.tgz
+
+# Scenario Runner
+.scenario-overlay/
+
+# Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfstate.backup
+**/terraform.tfstate.d/
+.venv/

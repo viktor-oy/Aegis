@@ -18,12 +18,12 @@ spec:
         {{- include "aegis.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: agent
     spec:
-      {{- if .Values.agent.securityContext }}
+      {{- if .Values.agent.podSecurityContext }}
       securityContext:
-        {{- toYaml .Values.agent.securityContext | nindent 8 }}
+        {{- toYaml .Values.agent.podSecurityContext | nindent 8 }}
       {{- end }}
       containers:
-        - name: agent
+        - name: aegis-agent
           image: {{ required "agent.image is required" .Values.agent.image | quote }}
           imagePullPolicy: {{ .Values.agent.imagePullPolicy | default "IfNotPresent" | quote }}
           env:
@@ -45,6 +45,8 @@ spec:
               value: {{ .Values.agent.telemetryDataSource | default "MOCK" | quote }}
             - name: AEGIS_AGENT_API_PORT
               value: {{ .Values.agent.apiPort | default 8080 | quote }}
+            - name: AEGIS_HEARTBEAT_INTERVAL_SECONDS
+              value: {{ .Values.agent.heartbeatIntervalSeconds | default 5 | quote }}
           ports:
             - containerPort: {{ .Values.agent.apiPort | default 8080 }}
               name: http
@@ -79,12 +81,12 @@ spec:
         {{- include "aegis.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: composer
     spec:
-      {{- if .Values.composer.securityContext }}
+      {{- if .Values.composer.podSecurityContext }}
       securityContext:
-        {{- toYaml .Values.composer.securityContext | nindent 8 }}
+        {{- toYaml .Values.composer.podSecurityContext | nindent 8 }}
       {{- end }}
       containers:
-        - name: composer
+        - name: aegis-composer
           image: {{ required "composer.image is required" .Values.composer.image | quote }}
           imagePullPolicy: {{ .Values.composer.imagePullPolicy | default "IfNotPresent" | quote }}
           ports:
@@ -104,11 +106,11 @@ spec:
             - name: AEGIS_LLM_MODEL
               value: {{ required "composer.llmModel is required when composer is enabled" .Values.composer.llmModel | quote }}
             - name: POSTMORTEM_LABEL_WORKER_ID
-              value: {{ .Values.composer.postmortem.labels.workerId | default "Worker ID" | quote }}
+              value: {{ tpl (.Values.composer.postmortem.labels.workerId | default "Worker ID") . | quote }}
             - name: POSTMORTEM_LABEL_INCIDENT_ID
-              value: {{ .Values.composer.postmortem.labels.incidentId | default "Incident ID" | quote }}
+              value: {{ tpl (.Values.composer.postmortem.labels.incidentId | default "Incident ID") . | quote }}
             - name: POSTMORTEM_LABEL_EVENT_ID
-              value: {{ .Values.composer.postmortem.labels.eventId | default "Event ID" | quote }}
+              value: {{ tpl (.Values.composer.postmortem.labels.eventId | default "Event ID") . | quote }}
             - name: AEGIS_COMPOSER_SYS_ARCH_PROMPT
               value: ""
             - name: AEGIS_COMPOSER_FORMAT_PROMPT
@@ -209,12 +211,12 @@ spec:
         {{- include "aegis.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: control-plane
     spec:
-      {{- if .Values.controlPlane.securityContext }}
+      {{- if .Values.controlPlane.podSecurityContext }}
       securityContext:
-        {{- toYaml .Values.controlPlane.securityContext | nindent 8 }}
+        {{- toYaml .Values.controlPlane.podSecurityContext | nindent 8 }}
       {{- end }}
       containers:
-        - name: control-plane
+        - name: aegis-control-plane
           image: {{ required "controlPlane.image is required" .Values.controlPlane.image | quote }}
           imagePullPolicy: {{ .Values.controlPlane.imagePullPolicy | default "IfNotPresent" | quote }}
           ports:
@@ -235,6 +237,20 @@ spec:
               value: {{ required "controlPlane.redisAddr is required" .Values.controlPlane.redisAddr | quote }}
             - name: AEGIS_KAFKA_BROKERS
               value: {{ required "controlPlane.kafkaBrokers is required" .Values.controlPlane.kafkaBrokers | quote }}
+            - name: AEGIS_DEBUG
+              value: {{ .Values.controlPlane.debug | default "false" | quote }}
+            - name: AEGIS_QUEUE_SIZE
+              value: {{ .Values.controlPlane.queueSize | default 256 | quote }}
+            - name: AEGIS_INCIDENT_ID_TUMBLING_WINDOW
+              value: {{ .Values.controlPlane.incidentIDTumblingWindow | default "1m" | quote }}
+            - name: AEGIS_HEARTBEAT_EXPIRY_SECONDS
+              value: {{ .Values.controlPlane.heartbeatExpirySeconds | default 15 | quote }}
+            - name: AEGIS_FSM_WATCHDOG_STUCK_THRESHOLD_SECONDS
+              value: {{ .Values.controlPlane.watchdogStuckThresholdSeconds | default 20 | quote }}
+            - name: AEGIS_FSM_DEFERRAL_TTL_SECONDS
+              value: {{ .Values.controlPlane.deferralTtlSeconds | default 10 | quote }}
+            - name: AEGIS_FSM_DEFERRAL_TOLERANCE_SECONDS
+              value: {{ .Values.controlPlane.deferralToleranceSeconds | default 5 | quote }}
           {{- if .Values.controlPlane.resources }}
           resources:
             {{- toYaml .Values.controlPlane.resources | nindent 12 }}
@@ -266,12 +282,12 @@ spec:
         {{- include "aegis.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: sink
     spec:
-      {{- if .Values.sink.securityContext }}
+      {{- if .Values.sink.podSecurityContext }}
       securityContext:
-        {{- toYaml .Values.sink.securityContext | nindent 8 }}
+        {{- toYaml .Values.sink.podSecurityContext | nindent 8 }}
       {{- end }}
       containers:
-        - name: sink
+        - name: aegis-sink
           image: {{ required "sink.image is required" .Values.sink.image | quote }}
           imagePullPolicy: {{ .Values.sink.imagePullPolicy | default "IfNotPresent" | quote }}
           env:
@@ -285,6 +301,24 @@ spec:
             {{- if .Values.sink.fileSink.enabled }}
             - name: AEGIS_FILE_SINK_PATH
               value: {{ required "sink.fileSink.path is required when fileSink is enabled" .Values.sink.fileSink.path | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.sink.emailSink }}
+            - name: AEGIS_EMAIL_SINK_ENABLED
+              value: {{ .Values.sink.emailSink.enabled | default false | quote }}
+            {{- if .Values.sink.emailSink.enabled }}
+            - name: AEGIS_SMTP_HOST
+              value: {{ required "sink.emailSink.smtpHost is required when emailSink is enabled" .Values.sink.emailSink.smtpHost | quote }}
+            - name: AEGIS_SMTP_PORT
+              value: {{ required "sink.emailSink.smtpPort is required when emailSink is enabled" .Values.sink.emailSink.smtpPort | quote }}
+            - name: AEGIS_SMTP_USER
+              value: {{ .Values.sink.emailSink.smtpUser | default "" | quote }}
+            - name: AEGIS_SMTP_PASS
+              value: {{ .Values.sink.emailSink.smtpPass | default "" | quote }}
+            - name: AEGIS_SMTP_TO
+              value: {{ required "sink.emailSink.smtpTo is required when emailSink is enabled" .Values.sink.emailSink.smtpTo | quote }}
+            - name: AEGIS_SMTP_FROM
+              value: {{ required "sink.emailSink.smtpFrom is required when emailSink is enabled" .Values.sink.emailSink.smtpFrom | quote }}
             {{- end }}
             {{- end }}
           ports:

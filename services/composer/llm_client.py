@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Protocol, Optional
 
-logger = logging.getLogger(__name__)
+from services.pkg.pylogger.logger import logger
 
 class InferenceClient(Protocol):
     model: str
@@ -63,8 +63,8 @@ class OpenAICompatibleInferenceClient:
         }
         import httpx
 
-        url = f"{self.config.base_url.rstrip('/')}/v1/chat/completions"
-        logger.info(f"Making LLM request to {url} for incident {incident_id}")
+        url = f"{self.config.base_url.rstrip('/')}/chat/completions"
+        logger.info(f"Making LLM request to {url} for incident {incident_id}", extra={"component": "LLM_CLIENT", "event": "LLM_REQUEST", "incident_id": incident_id, "url": url})
         
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
             response = await client.post(

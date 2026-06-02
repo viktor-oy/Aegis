@@ -63,17 +63,41 @@ func (w *Worker) Deliver(ctx context.Context, postmortem types.Postmortem) ([]ty
 	w.mu.Unlock()
 
 	results := make([]types.Result, 0, len(w.sinks))
+	anySuccess := false
+	var lastErr error
 	for _, sink := range w.sinks {
 		result := w.deliverOne(ctx, sink, postmortem)
 		results = append(results, result)
-		topic := TopicStatus
-		if result.Status == "dlq" {
-			topic = TopicDLQ
-		}
-		if err := w.publisher.PublishStatus(ctx, topic, result); err != nil {
-			return results, fmt.Errorf("publish delivery status: %w", err)
+		if result.Status == "delivered" {
+			anySuccess = true
+		} else {
+			lastErr = errors.New(result.Error)
 		}
 	}
+
+	aggResult := types.Result{
+		IncidentID:    postmortem.IncidentID,
+		Sink:          "aggregated",
+		CorrelationID: postmortem.CorrelationID,
+		CompletedAt:   time.Now().UTC(),
+		Attempts:      1,
+	}
+
+	topic := TopicStatus
+	if anySuccess {
+		aggResult.Status = "delivered"
+	} else {
+		aggResult.Status = "dlq"
+		topic = TopicDLQ
+		if lastErr != nil {
+			aggResult.Error = lastErr.Error()
+		}
+	}
+
+	if err := w.publisher.PublishStatus(ctx, topic, aggResult); err != nil {
+		return results, fmt.Errorf("publish delivery status: %w", err)
+	}
+
 	return results, nil
 }
 
