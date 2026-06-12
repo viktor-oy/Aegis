@@ -1,6 +1,6 @@
 
 FUTURE TODO
-
+- ensure local infra starts and works
 - CORRUPT_FSM log: print all important details
 - confirm retry, dlq mechanics
 - validate cp.windows[workerID] objects, it does not seem to be used yet and it keep adding objects which can lead to memory leak
@@ -9,7 +9,7 @@ Normally agent running as daemonset signifies GPU failure events will not be cor
 considering the underlying GPU to node configurations e.g. The "MIG" (Multi-Instance GPU) Scenario OR multiple 
 GPUs sharing the same cooling fan. Also multiple agents being unreachable at once maybe due to undelying k8s issue, 
 but aegis should be k8s agnostic
-- postmortem coalescing maybe by virtual and physical GPU ID and node ID or more...
+- postmortem coalescing maybe by virtual and physical GPU ID and node ID, multiple errorType of same worker, or more...
 - Telemetry Snapshot (The Lead-Up)
 A brief table or summary of the metrics exactly before the crash. Elite teams don't just want to know it crashed; they want to see the slope.
 - ensure sections a pre-fix postmortem should contain according to industry standard used by elite teams, is followed
@@ -20,9 +20,23 @@ A brief table or summary of the metrics exactly before the crash. Elite teams do
 - scenario runner advanced stages: Redis Split-Brain / CP Partitioning (test lease expiry) and Kafka Broker Drops (test producer retries)
 
 
+ORGANIZE
+===
+- prefix hashring DB lease keys with "aegis:" and exclude them from wipe_infra_state
+- refactor sink service to use two in-process Kafka consumer instances with separate group IDs (e.g., `aegis-sink-file` and `aegis-sink-email`) instead of a composite program loop over sink adapters. Weakness of current program loop: a failure or timeout in an external dependency (like SMTP email) prevents clean offset commitment, causing duplicate file sink writes on retry and coupling independent destinations into a single failure domain.
+- CRITICAL: monotonic clock and safety with telemetry timestamp(used by priority queue) provided by agents
+
+- poor quality code: tracker saves an array of workers and also has a priority queue containing worker info. This is too stateful and could contain stale worker data because k8s could restart worker(deamonsets) with a different podname at anytime and the tracker will not know. This can cause unnecessary missed heartbeat events/fsm for deliberately(manually or by k8s) deleted pods. Hashring is safe from this, because it does not store workerID, it only stores CP data and it constantly rebuilds the hashring with redis leases refreshed by CP. Redirect could be watched to purge those states but that might not be enough
 
 CLASSIFY
 ===
+- tombstone feature in composer and sink to avoid those services processing staleevents and sending obsolete notification. But without concepts(e.g. FSM) from CP bleeding into those services i.e. they should know little and avoid being too stateful.
+
+- [ ] infra: Adjust `/infra` and other workflow code (e.g. Helm values, python scripts) for `AEGIS_TOPIC_POSTMORTEM_GENERATED`, `AEGIS_TOPIC_DELIVERY_STATUS`, and `AEGIS_TOPIC_DELIVERY_DLQ` environment variables.
+
+- Make the strict FSM feature optional
+- should go "-race" flag be used?
+- make FSM optional and switch to a distributed CP store entirely
 - use waitGroup for control loops and other important areas
 - ensure kafka consumers connect in an infinite loop OR ensure liveness check return err if consumer lost connection with broker. WHich ever is better
 - CRITICAL: use redis unlink/scan instead of DEL/KEYS. But recall the former is unusable when synchronous exec flow is required to avoid race conditions
@@ -30,9 +44,8 @@ CLASSIFY
 - (continue_on_err: true) is questionable in some scenario yaml areas
 - Feature: Resolved/Healthy fsm marker GC. Maybe watchdog scan can handle(with acquireFSMLock) this. Note that FSM corrupt marker does not need to GC because it will be deleted by aegiscli, just ensure --force(without --fix-corrupt-fsm) will fail if there is FSM corrupt marker
 - FSM chain of events/trail and report to aegis devs
-- CRITICAL: monotonic clock and safety with telemetry timestamp(used by priority queue) provided by agents
 - protect various interval timers(e.g. for various loops in main.go) from compute delay to ensure they are steady
-- poor quality code: tracker saves an array of workers and also has a priority queue containing worker info. This is too stateful and could contain stale worker data because k8s could restart worker(deamonsets) with a different podname at anytime and the tracker will not know. This can cause unnecessary missed heartbeat events/fsm for deliberately(manually or by k8s) deleted pods. Hashring is safe from this, because it does not store workerID, it only stores CP data and it constantly rebuilds the hashring with redis leases refreshed by CP. Redirect could be watched to purge those states but that might not be enough
+
 - format ageiscli output properly
 - explicitly add `failure_type` into Composer's `aegis.postmortem.generated` payload, and fix the `causation_id` UUID mapping to bypass expensive `ListActiveWorkerStates` fallback.
 - sometimes log shows no corruption exists and stuck heartbeat keeps showing despite services/infra being up for the FSM to progress
@@ -89,7 +102,6 @@ CLASSIFY
 - integrate lint and tests into dev commit/push workflow
 - ensure silent errors are not causing k8s restarts e.g. kafka seems to restart often
 - analyze the effect of timeouts on all distributed lock usage. It maybe a watchdog is needed, also ensure the system is still protected if watchdog malfunctions(e.g. too late teimout refresh or failure)
-- refactor sink service to use two in-process Kafka consumer instances with separate group IDs (e.g., `aegis-sink-file` and `aegis-sink-email`) instead of a composite program loop over sink adapters. Weakness of current program loop: a failure or timeout in an external dependency (like SMTP email) prevents clean offset commitment, causing duplicate file sink writes on retry and coupling independent destinations into a single failure domain.
 - ensure just enough info is sent between services(e.g. agent sends object that includes old telemetry and logs) to save bandwidth
 - refactor `readExpectedEvents` in `server_integration_test.go` to scan expected topics concurrently instead of sequentially to drastically speed up CP integration tests.
 - hint in readme that OLLAMA_MODEL docker arg can be changed to cache a model in a dockerlayer and if possible provide more friendly means to change it than going to docker file
@@ -151,7 +163,6 @@ ensure cmd and instructions are platform agnostic
 - stop CP if any critical goroutine(e.g. membershipLoop) ends?
 - is heap not enough to store worker state?
 - cant UpdateRing currentRing locking be replaced with channels
-- ensure cluster components authorization e.g. the controlplane current does not have a verification process for a worker sending it telemetry
 - test coverage tool
 - use helmCharts field
 - remove tiltinfra run from all intg test to remove complexity, it should be started manually before running the test.

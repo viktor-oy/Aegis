@@ -5,14 +5,19 @@ VERBOSE ?= 0
 ifeq ($(VERBOSE),1)
 	PYTEST_FLAGS := -s --color=yes --log-cli-level=INFO
 	GOTESTSUM_FLAGS := --format standard-verbose
+	AEGIS_TEST_VERBOSE := true
+	AEGIS_DEBUG ?= 1
 else
 	PYTEST_FLAGS := --color=yes --log-cli-level=WARNING
 	GOTESTSUM_FLAGS := --format testname
+	AEGIS_TEST_VERBOSE := false
 endif
 
 export TILT_TEST_LOG
 export VERBOSE
 export AEGIS_KUBE_CONTEXT
+export AEGIS_TEST_VERBOSE
+export AEGIS_DEBUG
 
 .PHONY: help lint test test-unit test-intg test-python test-go tilt-infra-up proto docs-check tf-init tf-up tf-down dev-up init-kafka
 

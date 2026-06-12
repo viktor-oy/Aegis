@@ -77,6 +77,10 @@ Built for K8s. We use Helm and Kustomize to spin up the standalone Aegis service
 
 ## Local Validation
 
+> [!CAUTION]
+> **Not for Production**
+> The `Makefile` and scripts provided in this repository are strictly designed for local development, testing, and CI environments. Because they export hardcoded flags (like `AEGIS_DEBUG=1` on verbose runs), execute dynamic sysctl hacks, and perform highly destructive infrastructure wipes, you MUST NOT use the Makefile targets to manage or deploy production environments.
+
 How to run this beast locally:
 
 1. Your developer filesystem stores the repository.
@@ -325,10 +329,16 @@ To run tests individually while leveraging all our custom formatting and state c
 - **Run specific Go integration test**: `go run gotest.tools/gotestsum@latest --format standard-verbose -- ./services/sink -run TestSinkServiceIntegration_FileSink`
 - **Run specific Python integration test**: `PYTHONPATH=.:gen/python python3 -m pytest -s --color=yes --log-cli-level=INFO tests/integration/agent/test_agent_integration.py::test_grpc_stream_accepted`
   > **Note for Composer Tests:** The Composer integration test (`test_composer_integration.py`) generates a real postmortem using the local LLM and writes the resulting markdown file to `docs/services/composer/local/artifacts/` for manual inspection.
+- **Restart Tilt**: If an anomaly persists (e.g. out of memory because you reduced limits), you can always restart tilt with `make tilt-infra-up`.
+- **Pre-provision Kafka Topics**: You MUST run `scripts/ensure_test_infra.py` (which internally runs `make init-kafka`) before directly running any integration tests locally via your IDE or raw Go/Python commands. Running the tests via the Makefile (e.g., `make test-intg`) already covers this automatically. Tests assume standard topics already exist; they only dynamically provision randomized/namespaced test topics.
+
+## Wiping State
+
+- **Wipe all test state**: Run `make wipe-infra-state AEGIS_KUBE_CONTEXT="kind-aegis-intg-test"`
 - **Wipe infra state manually**: `AEGIS_KUBE_CONTEXT="kind-aegis" make wipe-infra-state TARGETS="redis,kafka:aegis.telemetry,aegis.events"` (You can specify exact Kafka topics as subtargets. The `AEGIS_KUBE_CONTEXT` environment variable governs which cluster is targeted; you MUST provide it explicitly. If wiping your dev cluster, pass `AEGIS_KUBE_CONTEXT="kind-aegis"`. If wiping tests, pass `AEGIS_KUBE_CONTEXT="kind-aegis-intg-test"`).
 
 **Useful Flags:**
-- `VERBOSE=1` (e.g., `make test-intg VERBOSE=1`): Instructs the underlying test runners (`pytest`, `gotestsum`) to stream all debug output and inner service logs dynamically as they run. By default (`VERBOSE=0`), integration tests run in a quiet mode and only print the results of the tests themselves to keep your terminal clean.
+- `VERBOSE=1` (e.g., `make test-intg VERBOSE=1`): Instructs the underlying test runners (`pytest`, `gotestsum`) to stream all debug output and inner service logs dynamically as they run, and also pipes the background Control Plane subprocess logs to your terminal for Go integration tests. By default (`VERBOSE=0`), integration tests run in a quiet mode and only print the results of the tests themselves to keep your terminal clean.
 - `AEGIS_KUBE_CONTEXT` (No default): Used universally by commands like `make init-kafka` and `make wipe-infra-state` to determine the active cluster target. This must be provided explicitly because these commands can be highly destructive to state.
 ## KEDA Scaling
 

@@ -43,6 +43,10 @@ sink:
 
 kafka:
   enabled: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/kafka
+    tag: "3.9.0-debian-12-r6"
   listeners:
     external:
       protocol: PLAINTEXT
@@ -76,8 +80,12 @@ kafka:
         cpu: 10m
         memory: 64Mi
 
-redis:
+etcd:
   enabled: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/etcd
+    tag: "3.5.14-debian-12-r1"
 
 mailpit:
   enabled: true

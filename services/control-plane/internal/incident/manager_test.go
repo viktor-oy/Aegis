@@ -231,7 +231,7 @@ func TestHandleDetection_IgnoresOnActiveFSM(t *testing.T) {
 		CurrentState:  string(state.WorkerDelivered),
 		CorrelationID: "corr-1",
 		UpdatedAt:     time.Now(),
-	})
+	}, "", 0, 0)
 	if err != nil {
 		t.Fatalf("failed to seed store: %v", err)
 	}

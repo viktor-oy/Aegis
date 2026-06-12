@@ -44,7 +44,7 @@ chain:
     stage_id: "<string>" # Optional, allows tracking which pods were targeted so later stages can target them again
     target_ref_id: "<string>" # Optional, uses the exact pods from a previous stage_id instead of random selection
     correlation_id_prefix: "<string>" # Optional
-    wait_for_fsm_creation_timeout_ms: <int> # Optional, timeout in milliseconds to wait for the CP to natively detect and create the FSM state in Redis
+    wait_for_fsm_creation_timeout_ms: <int> # Optional, timeout in milliseconds to wait for the CP to natively detect and create the FSM state in Etcd
 
   - action: wait_for_fsm_state
     target_ref_id: "<string>" # Required. Targets from a previous stage_id
@@ -55,9 +55,9 @@ chain:
   - action: kafka_produce_message
     topic: "<string>" # e.g. "aegis.postmortem.delivery.status"
     target_ref_id: "<string>" # Required. Targets from a previous stage_id where correlation_id was saved
-    inject_incident_id: <boolean> # Optional, dynamically fetches the incident_id from Redis and injects it into the payload
+    inject_incident_id: <boolean> # Optional, dynamically fetches the incident_id from Etcd and injects it into the payload
     wait_for_fsm_creation_timeout_ms: <int> # Optional, timeout in milliseconds to wait for the incident to be created when inject_incident_id is true
-    error_type: "<string>" # Optional, required if inject_incident_id is true to find the state in Redis
+    error_type: "<string>" # Optional, required if inject_incident_id is true to find the state in Etcd
     payload: # Optional, arbitrary JSON payload
       <key>: "<value>"
 

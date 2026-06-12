@@ -52,14 +52,14 @@ func TestWatchdog_Sharding(t *testing.T) {
 		IncidentID:   "inc_1",
 		CurrentState: string(state.WorkerSuspected),
 		UpdatedAt:    stuckTime,
-	})
+	}, "", 0, 0)
 	_ = store.SetWorkerState(ctx, membership.WorkerState{
 		WorkerID:     "worker-stuck-b",
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc_2",
 		CurrentState: string(state.WorkerSuspected),
 		UpdatedAt:    stuckTime,
-	})
+	}, "", 0, 0)
 	
 	// Add 2 corrupt markers
 	_ = store.SetDLQMarker(ctx, "worker-corrupt-a", "ECCBurst", "illegal")
@@ -99,7 +99,7 @@ func TestWatchdog_StuckIncidentDetection(t *testing.T) {
 		IncidentID:   "inc_stuck_100",
 		CurrentState: string(state.WorkerSuspected),
 		UpdatedAt:    stuckTime,
-	})
+	}, "", 0, 0)
 
 	stuck, corrupt, err := watchdog.InspectOnce(ctx, now)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestWatchdog_NotStuckIncident(t *testing.T) {
 		IncidentID:   "inc_rec_101",
 		CurrentState: string(state.WorkerDiagnosticsTriggered),
 		UpdatedAt:    recentTime,
-	})
+	}, "", 0, 0)
 
 	stuck, corrupt, err := watchdog.InspectOnce(ctx, now)
 	if err != nil {

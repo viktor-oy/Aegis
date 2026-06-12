@@ -10,6 +10,7 @@ import (
 	"runtime/trace"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -69,10 +70,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	redisAddr := requireEnv("AEGIS_REDIS_ADDR")
+	etcdUrls := os.Getenv("AEGIS_ETCD_URLS")
+	if etcdUrls == "" {
+		etcdUrls = "http://localhost:2379"
+	}
 	kafkaBrokers := requireEnv("AEGIS_KAFKA_BROKERS")
-
-	store := membership.NewRedisStore(redisAddr)
+	store, err := membership.NewEtcdStore(strings.Split(etcdUrls, ","))
+	if err != nil {
+		slog.Error("failed to connect to etcd", "error", err)
+		os.Exit(1)
+	}
 	member := hashring.Member{ID: id, Address: address}
 	now := time.Now().UTC()
 	if err := store.Register(context.Background(), member, 30*time.Second, now); err != nil {
@@ -113,17 +120,24 @@ func main() {
 	manager := incident.NewManager(store, publisher, localDiagnostics{}, state.CreateProducerRef(id), incidentIDTumblingWindow)
 	cp := server.New(id, address, ring, manager, queueSize, time.Duration(heartbeatExpiry)*time.Second)
 
+	var wg sync.WaitGroup
+
 	// Multiconcurrency for telemetry ingestion.
 	numWorkers := runtime.NumCPU()
 	for i := 0; i < numWorkers; i++ {
-		go telemetryLoop(ctx, cp)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			telemetryLoop(ctx, cp)
+		}()
 	}
 
 	// Background heartbeat expiry loop.
-	go heartbeatLoop(ctx, cp)
-
-	// Background membership refresh and ring rebuild loop.
-	// We'll launch this below after creating the watchdog.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		heartbeatLoop(ctx, cp)
+	}()
 
 	// Background FSM consumer loop for downstream pipeline state tracking.
 	fsmConsumer := incident.NewFSMConsumer(store, publisher, state.CreateProducerRef(id))
@@ -131,14 +145,26 @@ func main() {
 	if groupID == "" {
 		groupID = "aegis-cp-fsm-group"
 	}
-	go fsmConsumerLoop(ctx, fsmConsumer, strings.Split(kafkaBrokers, ","), groupID)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fsmConsumerLoop(ctx, fsmConsumer, strings.Split(kafkaBrokers, ","), groupID)
+	}()
 
 	// Background FSM indefinite state watchdog for stuck incident and corrupt marker alerting.
 	watchdog := incident.NewWatchdog(store, publisher, state.CreateProducerRef(id), id)
-	go watchdog.Start(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		watchdog.Start(ctx)
+	}()
 
 	// Background membership refresh and ring rebuild loop.
-	go membershipLoop(ctx, member, store, cp, watchdog)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		membershipLoop(ctx, member, store, cp, watchdog)
+	}()
 
 	// gRPC server.
 	lis, err := net.Listen("tcp", grpcAddress)
@@ -174,6 +200,7 @@ func main() {
 		healthServer.SetServingStatus("aegis.v1.ControlPlaneTelemetry", healthpb.HealthCheckResponse_NOT_SERVING)
 		grpcServer.GracefulStop()
 		cancel()
+		wg.Wait()
 	}()
 
 	slog.Info("aegis control-plane listening", "component", "GRPC_SERVER", "event", "STARTING", "id", id, "address", grpcAddress, "protocol", "gRPC")
@@ -327,7 +354,7 @@ func fsmConsumerLoop(ctx context.Context, consumer *incident.FSMConsumer, broker
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
-				if err := consumer.ConsumeEvent(ctx, m.Topic, m.Value); err != nil {
+				if err := consumer.ConsumeEvent(ctx, m.Topic, m.Partition, m.Offset, m.Value); err != nil {
 					slog.Error("consume event error", "component", "FSM_CONSUMER", "event", "CONSUME_ERR", "topic", m.Topic, "error", err)
 				}
 			}

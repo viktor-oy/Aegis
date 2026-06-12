@@ -255,8 +255,8 @@ spec:
         run_cmd(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "wait", "--for=condition=ready", "pod", "--all", "-n", "aegis-system", "--timeout=300s"], check=True, capture_output=False)
         logger.info("All workloads are fully synchronized and healthy.")
             
-        logger.info("Flushing Redis to ensure a clean slate for the scenario (removing old incidents/deferrals)...")
-        run_cmd(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "aegis-redis-master-0", "-n", "aegis-system", "--", "redis-cli", "FLUSHDB"], check=True, capture_output=False)
+        logger.info("Flushing Etcd to ensure a clean slate for the scenario (removing old incidents/deferrals)...")
+        run_cmd(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "del", '""', "--prefix"], check=True, capture_output=False)
             
     except Exception as e:
         logger.error(f"Error during infrastructure setup: {e}")
@@ -316,8 +316,8 @@ def wait_for_fsm_creation(worker_id: str, error_type: str, expected_corr_id: str
     timeout_s = timeout_ms / 1000.0
     start_time = time.time()
     while True:
-        redis_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "aegis-redis-master-0", "-n", "aegis-system", "--", "redis-cli", "GET", f"aegis:cp:worker:state:{worker_id}:{error_type}"]
-        res = run_cmd(redis_cmd, check=False, capture_output=True)
+        etcd_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "get", f"aegis:cp:worker:state:{worker_id}:{error_type}", "--print-value-only"]
+        res = run_cmd(etcd_cmd, check=False, capture_output=True)
         if res.returncode == 0 and res.stdout.strip():
             try:
                 state_data = json.loads(res.stdout.strip())
@@ -336,8 +336,8 @@ def poll_for_fsm_state(worker_id: str, error_type: str, expected_state: str, tim
     timeout_s = timeout_ms / 1000.0
     start_time = time.time()
     while True:
-        redis_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "aegis-redis-master-0", "-n", "aegis-system", "--", "redis-cli", "GET", f"aegis:cp:worker:state:{worker_id}:{error_type}"]
-        res = run_cmd(redis_cmd, check=False, capture_output=True)
+        etcd_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "get", f"aegis:cp:worker:state:{worker_id}:{error_type}", "--print-value-only"]
+        res = run_cmd(etcd_cmd, check=False, capture_output=True)
         if res.returncode == 0 and res.stdout.strip():
             try:
                 state_data = json.loads(res.stdout.strip())
@@ -550,7 +550,7 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
                 else:
                     raise ValueError(f"Could not determine target pods. Please specify target_ref_id.")
                 
-                # Dynamically fetch the incident_id from Redis if the scenario needs it to forge a valid payload
+                # Dynamically fetch the incident_id from Etcd if the scenario needs it to forge a valid payload
                 if stage.get("inject_incident_id", False):
                     # We just take the first pod from the target group
                     pod = targets[0]
@@ -563,7 +563,7 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
                         payload["incident_id"] = incident_id
                         logger.info(f"[Stage {idx}] Dynamically injected incident_id '{payload['incident_id']}' into payload.")
                     else:
-                        raise RuntimeError(f"Timeout or missing valid incident_id in Redis state matching correlation_id '{corr_id}'")
+                        raise RuntimeError(f"Timeout or missing valid incident_id in Etcd state matching correlation_id '{corr_id}'")
 
                 logger.info(f"[Stage {idx}] Producing raw forged message to topic {topic} for correlation_id {corr_id}")
                 asyncio.run(kafka_produce_message(topic, corr_id, payload))

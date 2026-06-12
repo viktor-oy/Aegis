@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	DefaultRedisAddr    = "localhost:36380"
-	DefaultKafkaBrokers = []string{"localhost:39093"}
+	DefaultEtcdUrls     = "127.0.0.1:36380"
+	DefaultKafkaBrokers = []string{"127.0.0.1:39093"}
 )
 
 // GetProjectRoot finds the root directory of the project by looking for the Makefile.
@@ -44,7 +44,7 @@ func GetProjectRoot(t *testing.T) string {
 	return rootDir
 }
 
-// WipeTestState wipes the specified infrastructure ("redis", "kafka", or "" for all).
+// WipeTestState wipes the specified infrastructure ("etcd", "kafka", or "" for all).
 func WipeTestState(t *testing.T, targets string) {
 	if t != nil {
 		t.Helper()
@@ -56,6 +56,7 @@ func WipeTestState(t *testing.T, targets string) {
 	rootDir := GetProjectRoot(t)
 
 	args := []string{"wipe-infra-state"}
+
 	if targets != "" {
 		args = append(args, "TARGETS="+targets)
 	}
@@ -87,3 +88,31 @@ func LogInfo(t *testing.T, format string, args ...any) {
 	fmt.Printf("\033[36m[TEST: %s] %s\033[0m\n", t.Name(), msg)
 }
 
+// EnsureKafkaTopics explicitly creates the given Kafka topics via Python utility.
+func EnsureKafkaTopics(t *testing.T, topics []string, partitions int) {
+	if t != nil {
+		t.Helper()
+		LogInfo(t, "📖 Creating Kafka topics %v with %d partitions...", topics, partitions)
+	} else {
+		fmt.Printf("📖 Creating Kafka topics %v with %d partitions...\n", topics, partitions)
+	}
+	
+	rootDir := GetProjectRoot(t)
+	scriptPath := filepath.Join(rootDir, "scripts", "ensure_kafka_topics.py")
+	
+	args := []string{scriptPath, "--brokers", strings.Join(DefaultKafkaBrokers, ","), "--partitions", fmt.Sprint(partitions)}
+	args = append(args, topics...)
+	
+	cmd := exec.Command("mise", append([]string{"exec", "--", "python"}, args...)...)
+	cmd.Dir = rootDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	
+	if err := cmd.Run(); err != nil {
+		if t != nil {
+			t.Fatalf("Failed to create topics via python script: %v", err)
+		} else {
+			panic(fmt.Sprintf("Failed to create topics via python script: %v", err))
+		}
+	}
+}

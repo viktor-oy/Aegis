@@ -22,7 +22,7 @@ func TestFSMConsumer_PostmortemGenerated(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc_pm_1",
 		CurrentState: string(state.WorkerPostmortemRequested),
-	})
+	}, "", 0, 0)
 
 	env := state.EventEnvelope{
 		EventType:  TopicPostmortemGenerated,
@@ -34,7 +34,7 @@ func TestFSMConsumer_PostmortemGenerated(t *testing.T) {
 	}
 	data, _ := json.Marshal(env)
 
-	if err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, data); err != nil {
+	if err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, 0, 0, data); err != nil {
 		t.Fatalf("ConsumeEvent failed: %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestFSMConsumer_DeliveryDelivered(t *testing.T) {
 		ErrorType:    string(state.FailureGPUOverheat),
 		IncidentID:   "inc_deliv_2",
 		CurrentState: string(state.WorkerDeliveryInProgress),
-	})
+	}, "", 0, 0)
 
 	payload := map[string]any{
 		"incident_id": "inc_deliv_2",
@@ -67,7 +67,7 @@ func TestFSMConsumer_DeliveryDelivered(t *testing.T) {
 	}
 	data, _ := json.Marshal(payload)
 
-	if err := consumer.ConsumeEvent(ctx, TopicDeliveryStatus, data); err != nil {
+	if err := consumer.ConsumeEvent(ctx, TopicDeliveryStatus, 0, 0, data); err != nil {
 		t.Fatalf("ConsumeEvent failed: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestFSMConsumer_DeliveryDLQ(t *testing.T) {
 		ErrorType:    string(state.FailureVRAMPressure),
 		IncidentID:   "inc_dlq_3",
 		CurrentState: string(state.WorkerDeliveryInProgress),
-	})
+	}, "", 0, 0)
 
 	payload := map[string]any{
 		"incident_id": "inc_dlq_3",
@@ -101,7 +101,7 @@ func TestFSMConsumer_DeliveryDLQ(t *testing.T) {
 	}
 	data, _ := json.Marshal(payload)
 
-	if err := consumer.ConsumeEvent(ctx, TopicDeliveryDLQ, data); err != nil {
+	if err := consumer.ConsumeEvent(ctx, TopicDeliveryDLQ, 0, 0, data); err != nil {
 		t.Fatalf("ConsumeEvent failed: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestFSMConsumer_IllegalTransitionToDLQ(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc_ill_4",
 		CurrentState: string(state.WorkerSuspected),
-	})
+	}, "", 0, 0)
 
 	payload := map[string]any{
 		"incident_id": "inc_ill_4",
@@ -134,7 +134,7 @@ func TestFSMConsumer_IllegalTransitionToDLQ(t *testing.T) {
 	}
 	data, _ := json.Marshal(payload)
 
-	err := consumer.ConsumeEvent(ctx, TopicDeliveryStatus, data)
+	err := consumer.ConsumeEvent(ctx, TopicDeliveryStatus, 0, 0, data)
 	if err == nil {
 		t.Fatalf("expected illegal transition error when jumping SUSPECTED -> DELIVERED")
 	}
@@ -165,7 +165,7 @@ func TestFSMConsumer_CorruptMarkerRejectsValidTransitions(t *testing.T) {
 		ErrorType:    string(state.FailureLatencySpike),
 		IncidentID:   "inc_corrupt_1",
 		CurrentState: string(state.WorkerPostmortemRequested),
-	})
+	}, "", 0, 0)
 
 	// Create a normally VALID transition event: PostmortemRequested -> PostmortemGenerated
 	env := state.EventEnvelope{
@@ -179,7 +179,7 @@ func TestFSMConsumer_CorruptMarkerRejectsValidTransitions(t *testing.T) {
 	}
 	data, _ := json.Marshal(env)
 
-	err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, data)
+	err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, 0, 0, data)
 	if err != nil {
 		t.Fatalf("expected nil error (graceful drop) when processing corrupt FSM, got: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestFSMConsumer_DeferredDelivery_MatchesIncident(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc_def_1",
 		CurrentState: string(state.WorkerPostmortemRequested),
-	})
+	}, "", 0, 0)
 
 	// Inject a deferred DELIVERED event matching this incident
 	defPayload := map[string]any{
@@ -226,7 +226,7 @@ func TestFSMConsumer_DeferredDelivery_MatchesIncident(t *testing.T) {
 	}
 	data, _ := json.Marshal(env)
 
-	if err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, data); err != nil {
+	if err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, 0, 0, data); err != nil {
 		t.Fatalf("ConsumeEvent failed: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestFSMConsumer_DeferredDelivery_IgnoresStale(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc_def_2_NEW",
 		CurrentState: string(state.WorkerPostmortemRequested),
-	})
+	}, "", 0, 0)
 
 	// Inject a deferred DELIVERED event from an OLD incident
 	defPayload := map[string]any{
@@ -275,7 +275,7 @@ func TestFSMConsumer_DeferredDelivery_IgnoresStale(t *testing.T) {
 	}
 	data, _ := json.Marshal(env)
 
-	if err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, data); err != nil {
+	if err := consumer.ConsumeEvent(ctx, TopicPostmortemGenerated, 0, 0, data); err != nil {
 		t.Fatalf("ConsumeEvent failed: %v", err)
 	}
 

@@ -21,7 +21,7 @@ func TestRunResolve_DefaultResolve(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc-100",
 		CurrentState: string(state.WorkerDelivered),
-	})
+	}, "", 0, 0)
 
 	err := RunResolve(ctx, store, pub, "worker-10", string(state.FailureECCBurst), false, false, "", now)
 	if err != nil {
@@ -55,7 +55,7 @@ func TestRunResolve_FixCorruptFSM(t *testing.T) {
 		ErrorType:    string(state.FailureGPUOverheat),
 		IncidentID:   "inc-200",
 		CurrentState: string(state.WorkerSuspected),
-	})
+	}, "", 0, 0)
 	_ = store.SetDLQMarker(ctx, "worker-20", string(state.FailureGPUOverheat), "corrupt fsm marker")
 
 	err := RunResolve(ctx, store, pub, "worker-20", string(state.FailureGPUOverheat), true, false, "", now)
@@ -90,7 +90,7 @@ func TestRunResolve_ForceOverride(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc-300",
 		CurrentState: string(state.WorkerDeliveryFailed),
-	})
+	}, "", 0, 0)
 
 	err := RunResolve(ctx, store, pub, "worker-30", string(state.FailureECCBurst), false, true, "", now)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestRunResolve_IllegalTransitionWithoutForce(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc-400",
 		CurrentState: string(state.WorkerPostmortemGenerated),
-	})
+	}, "", 0, 0)
 
 	err := RunResolve(ctx, store, pub, "worker-40", string(state.FailureECCBurst), false, false, "", now)
 	if err == nil {
@@ -147,7 +147,7 @@ func TestRunResolve_ForceOverride_WithState(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc-600",
 		CurrentState: string(state.WorkerPostmortemGenerated),
-	})
+	}, "", 0, 0)
 
 	err := RunResolve(ctx, store, pub, "worker-60", string(state.FailureECCBurst), false, true, "SUSPECTED", now)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestRunResolve_AlreadyResolved_NoOp(t *testing.T) {
 		ErrorType:    string(state.FailureECCBurst),
 		IncidentID:   "inc-700",
 		CurrentState: string(state.WorkerResolved),
-	})
+	}, "", 0, 0)
 
 	err := RunResolve(ctx, store, pub, "worker-70", string(state.FailureECCBurst), false, false, "", now)
 	if err == nil || err.Error() != "cannot resolve: FSM is already in state RESOLVED" {

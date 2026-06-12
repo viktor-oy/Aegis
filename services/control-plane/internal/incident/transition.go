@@ -48,7 +48,7 @@ func CheckDLQMarker(ctx context.Context, store Store, msg string, component stri
 	return nil
 }
 
-// executeFSMTransition performs the core state machine validation, updates the authoritative state in Redis,
+// executeFSMTransition performs the core state machine validation, updates the authoritative state in etcd,
 // and conditionally publishes an event if a publisher is provided.
 func executeFSMTransition(
 	ctx context.Context,
@@ -61,6 +61,9 @@ func executeFSMTransition(
 	incidentID string,
 	correlationID string,
 	toState state.WorkerHealthState,
+	topic string,
+	partition int,
+	offset int64,
 ) error {
 	existing, err := store.GetWorkerState(ctx, workerID, errorType)
 	fromState := state.WorkerHealthy
@@ -109,7 +112,7 @@ func executeFSMTransition(
 		CurrentState:  string(toState),
 		CorrelationID: correlationID,
 		UpdatedAt:     time.Now().UTC(),
-	})
+	}, topic, partition, offset)
 
 	if err == nil {
 		slog.Info("successful FSM transition",

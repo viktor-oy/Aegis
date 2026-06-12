@@ -54,11 +54,11 @@ func main() {
 
 	resolveFlags := flag.NewFlagSet("resolve", flag.ExitOnError)
 	fixCorruptFSM := resolveFlags.Bool("fix-corrupt-fsm", false, "Reset FSM state to HEALTHY after clearing stuck/corrupt flags")
-	force := resolveFlags.Bool("force", false, "Ignore transition validation errors and forcefully overwrite state in Redis")
+	force := resolveFlags.Bool("force", false, "Ignore transition validation errors and forcefully overwrite state in etcd")
 	fixAll := resolveFlags.Bool("fix-all", false, "Reset FSM state to HEALTHY and forcefully overwrite state (combines --fix-corrupt-fsm and --force)")
 	targetStateStr := resolveFlags.String("state", "", "Force a specific target state (must be used with --force)")
 	usecase := resolveFlags.String("usecase", getEnv("AEGIS_USECASE", "local"), "Aegis usecase: local, intg-test, scenario")
-	redisAddr := resolveFlags.String("redis-addr", "", "Redis server address (default inferred from --usecase)")
+	etcdUrlsStr := resolveFlags.String("etcd-urls", "", "Etcd server URLs (comma-separated, default inferred from --usecase)")
 	kafkaBrokersStr := resolveFlags.String("kafka-brokers", "", "Kafka broker addresses (comma-separated, default inferred from --usecase)")
 	yes := resolveFlags.Bool("yes", false, "Bypass all confirmation prompts (assume yes)")
 	_ = resolveFlags.Bool("non-interactive", false, "Use structured JSON/Dev logging instead of default interactive logging")
@@ -74,15 +74,14 @@ func main() {
 	for _, arg := range os.Args[2:] {
 		if strings.HasPrefix(arg, "-") {
 			flagsOnly = append(flagsOnly, arg)
-			// Handle cases like --state HEALTHY
-			if arg == "--state" || arg == "-state" || arg == "--redis-addr" || arg == "-redis-addr" || arg == "--kafka-brokers" || arg == "-kafka-brokers" || arg == "--usecase" || arg == "-usecase" {
+			if arg == "--state" || arg == "-state" || arg == "--etcd-urls" || arg == "-etcd-urls" || arg == "--kafka-brokers" || arg == "-kafka-brokers" || arg == "--usecase" || arg == "-usecase" {
 				// We'll let flag.Parse handle the actual value parsing, this is just to prevent breaking positionals
 			}
 		} else {
 			// If the previous argument was a flag that requires a value, this is its value, not a positional.
 			if len(flagsOnly) > 0 {
 				lastFlag := flagsOnly[len(flagsOnly)-1]
-				if lastFlag == "--state" || lastFlag == "-state" || lastFlag == "--redis-addr" || lastFlag == "-redis-addr" || lastFlag == "--kafka-brokers" || lastFlag == "-kafka-brokers" || lastFlag == "--usecase" || lastFlag == "-usecase" {
+				if lastFlag == "--state" || lastFlag == "-state" || lastFlag == "--etcd-urls" || lastFlag == "-etcd-urls" || lastFlag == "--kafka-brokers" || lastFlag == "-kafka-brokers" || lastFlag == "--usecase" || lastFlag == "-usecase" {
 					flagsOnly = append(flagsOnly, arg)
 					continue
 				}
@@ -112,16 +111,16 @@ func main() {
 		}
 	}
 
-	if *redisAddr == "" {
-		if envAddr := os.Getenv("AEGIS_REDIS_ADDR"); envAddr != "" {
-			*redisAddr = envAddr
+	if *etcdUrlsStr == "" {
+		if envUrls := os.Getenv("AEGIS_ETCD_URLS"); envUrls != "" {
+			*etcdUrlsStr = envUrls
 		} else if portsJSONFound && portsData[*usecase] != nil {
-			if port, ok := portsData[*usecase]["redis"].(float64); ok {
-				*redisAddr = fmt.Sprintf("localhost:%d", int(port))
+			if port, ok := portsData[*usecase]["etcd"].(float64); ok {
+				*etcdUrlsStr = fmt.Sprintf("http://localhost:%d", int(port))
 			}
 		}
-		if *redisAddr == "" {
-			fmt.Fprintf(os.Stderr, "error: could not determine redis address (check scripts/ports.json or AEGIS_REDIS_ADDR)\n")
+		if *etcdUrlsStr == "" {
+			fmt.Fprintf(os.Stderr, "error: could not determine etcd urls (check scripts/ports.json or AEGIS_ETCD_URLS)\n")
 			os.Exit(1)
 		}
 	}
@@ -214,10 +213,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	store := membership.NewRedisStore(*redisAddr)
+	store, err := membership.NewEtcdStore(strings.Split(*etcdUrlsStr, ","))
+	if err != nil {
+		slog.Error("failed to connect to etcd", "component", "CLI", "error", err)
+		os.Exit(1)
+	}
 	pub := kafka.NewKafkaPublisher(strings.Split(*kafkaBrokersStr, ","))
 
-	err := RunResolve(ctx, store, pub, workerID, errorType, *fixCorruptFSM, *force, *targetStateStr, time.Now().UTC())
+	err = RunResolve(ctx, store, pub, workerID, errorType, *fixCorruptFSM, *force, *targetStateStr, time.Now().UTC())
 	if err != nil {
 		slog.Error("resolve failed", "component", "CLI", "event", "RESOLVE_ERR", "error", err)
 		os.Exit(1)
@@ -267,7 +270,7 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 
 	if fixCorruptFSM {
 		if marker == "" && !force {
-			return errors.New("cannot fix corrupt FSM: no corruption evidence (DLQ marker) found in Redis; use --force to override")
+			return errors.New("cannot fix corrupt FSM: no corruption evidence (DLQ marker) found in etcd; use --force to override")
 		}
 
 		if marker == "" && force {
@@ -307,7 +310,7 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 		}
 	}
 
-	// Clear any DLQ marker in Redis
+	// Clear any DLQ marker in etcd
 	if err := store.DeleteDLQMarker(ctx, workerID, errorType); err != nil {
 		return fmt.Errorf("delete dlq marker: %w", err)
 	}
@@ -315,7 +318,7 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 	// Also clear any deferred DELIVERED events to prevent state leakage to future incidents
 	_ = store.DeleteDeferredEvent(ctx, workerID, errorType, incident.TopicDeliveryStatus)
 
-	// Set authoritative Redis state
+	// Set authoritative etcd state
 	st := membership.WorkerState{
 		WorkerID:      workerID,
 		ErrorType:     errorType,
@@ -324,7 +327,7 @@ func RunResolve(ctx context.Context, store incident.Store, pub kafka.Publisher, 
 		CorrelationID: correlationID,
 		UpdatedAt:     now,
 	}
-	if err := store.SetWorkerState(ctx, st); err != nil {
+	if err := store.SetWorkerState(ctx, st, "", 0, 0); err != nil {
 		return fmt.Errorf("set worker state: %w", err)
 	}
 	slog.Info("successful FSM transition", "component", "CLI", "event", "FSM_TRANSITION",

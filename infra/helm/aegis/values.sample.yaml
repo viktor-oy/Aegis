@@ -113,12 +113,12 @@ kafka:
     capabilities:
       drop: ["ALL"]
 
-redis:
+etcd:
   enabled: true
-  fullnameOverride: "aegis-redis"
-  architecture: "standalone"
+  fullnameOverride: "aegis-etcd"
   auth:
-    enabled: false
+    rbac:
+      create: false
   podSecurityContext:
     enabled: true
     runAsUser: 1001

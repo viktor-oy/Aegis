@@ -16,16 +16,18 @@ if not AEGIS_KUBE_CONTEXT:
         "(e.g., specifying kind-aegis-intg-test vs your local kind-aegis dev cluster)."
     )
 
-def wipe_redis():
-    log_info("🧹 Wiping Redis State (excluding CP membership leases)...")
-    lua_script = "local keys = redis.call('KEYS', 'aegis:*') for _, key in ipairs(keys) do if not string.match(key, '^aegis:cp:member:') then redis.call('DEL', key) end end"
+def wipe_etcd():
+    log_info("🧹 Wiping etcd State...")
     try:
         subprocess.run(
-            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-redis-master-0", "--", "redis-cli", "EVAL", lua_script, "0"],
-            stdout=subprocess.DEVNULL
+            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "del", "aegis:", "--prefix"],
+            stdout=subprocess.DEVNULL,
+            check=True
         )
     except FileNotFoundError:
-        print("kubectl not found, skipping redis wipe")
+        print("kubectl not found, skipping etcd wipe")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to wipe etcd. It might not be ready yet: {e}", file=sys.stderr)
 
 def wipe_kafka(target_topics=None):
     if target_topics:
@@ -105,11 +107,11 @@ def main():
             targets.append(arg)
             
     if not targets:
-        targets = ["redis", "kafka"]
+        targets = ["etcd", "kafka"]
         
     for target in targets:
-        if target == "redis":
-            wipe_redis()
+        if target == "etcd":
+            wipe_etcd()
         elif target == "kafka" or target.startswith("kafka:"):
             if target.startswith("kafka:"):
                 topics = target.split(":", 1)[1].split(",")
@@ -117,7 +119,7 @@ def main():
             else:
                 wipe_kafka()
         else:
-            print(f"⚠️ Unknown target: {target}. Supported: redis, kafka")
+            print(f"⚠️ Unknown target: {target}. Supported: etcd, kafka")
             
     log_info("✅ Infra state wiped.")
 

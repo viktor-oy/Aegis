@@ -135,8 +135,9 @@ func (w *Watchdog) InspectOnce(ctx context.Context, now time.Time) (int, int, er
 
 	for _, m := range markers {
 		parts := strings.Split(m, ":")
+		workerID := "unknown"
 		if len(parts) >= 6 {
-			workerID := parts[4] // format: aegis:cp:dlq:corrupt:<workerID>:<errorType>
+			workerID = parts[4] // format: aegis:cp:dlq:corrupt:<workerID>:<errorType>
 			if ring != nil {
 				owner, ok := ring.Owner(workerID)
 				if ok && owner.ID != w.cpID {
@@ -146,14 +147,15 @@ func (w *Watchdog) InspectOnce(ctx context.Context, now time.Time) (int, int, er
 		}
 
 		corruptCount++
-		slog.Warn("corrupt FSM marker detected in Redis", "component", "WATCHDOG", "event", "CORRUPT_FSM",
+		slog.Warn("corrupt FSM marker detected in Etcd", "component", "WATCHDOG", "event", "CORRUPT_FSM",
 			"metric", "aegis_fsm_corrupt_marker_detected",
 			"marker", m,
+			"worker_id", workerID,
 		)
 		if w.publisher != nil {
 			inc := state.Incident{
 				IncidentID:  "dlq-marker-alert",
-				WorkerID:    m,
+				WorkerID:    workerID,
 				FailureType: "CORRUPT_FSM_MARKER",
 			}
 			env := kafka.NewEnvelope("aegis.cp.fsm_corrupt_marker", inc, w.producer, m, map[string]any{

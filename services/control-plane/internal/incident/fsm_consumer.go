@@ -15,11 +15,18 @@ import (
 	"github.com/aegis/aegis/services/control-plane/internal/state"
 )
 
-const (
-	TopicPostmortemGenerated = "aegis.postmortem.generated"
-	TopicDeliveryStatus      = "aegis.postmortem.delivery.status"
-	TopicDeliveryDLQ         = "aegis.postmortem.delivery.dlq"
+var (
+	TopicPostmortemGenerated = getEnvOrDefault("AEGIS_TOPIC_POSTMORTEM_GENERATED", "aegis.postmortem.generated")
+	TopicDeliveryStatus      = getEnvOrDefault("AEGIS_TOPIC_DELIVERY_STATUS", "aegis.postmortem.delivery.status")
+	TopicDeliveryDLQ         = getEnvOrDefault("AEGIS_TOPIC_DELIVERY_DLQ", "aegis.postmortem.delivery.dlq")
 )
+
+func getEnvOrDefault(key, fallback string) string {
+	if val, ok := os.LookupEnv(key); ok {
+		return val
+	}
+	return fallback
+}
 
 type FSMConsumer struct {
 	store     Store
@@ -35,8 +42,8 @@ func NewFSMConsumer(store Store, publisher kafka.Publisher, producer string) *FS
 	}
 }
 
-// ConsumeEvent parses a Kafka message payload from downstream topics and updates Redis FSM state.
-func (c *FSMConsumer) ConsumeEvent(ctx context.Context, topic string, value []byte) error {
+// ConsumeEvent parses a Kafka message payload from downstream topics and updates etcd FSM state.
+func (c *FSMConsumer) ConsumeEvent(ctx context.Context, topic string, partition int, offset int64, value []byte) error {
 	slog.Info("received event", "component", "FSM_CONSUMER", "event", "KAFKA_RECEIVE", "topic", topic, "payload_len", len(value))
 	if len(value) == 0 {
 		return nil
@@ -47,15 +54,15 @@ func (c *FSMConsumer) ConsumeEvent(ctx context.Context, topic string, value []by
 
 	switch topic {
 	case TopicPostmortemGenerated:
-		return c.handlePostmortemGenerated(ctx, value)
+		return c.handlePostmortemGenerated(ctx, topic, partition, offset, value)
 	case TopicDeliveryStatus, TopicDeliveryDLQ:
-		return c.handleDeliveryStatus(ctx, topic, value)
+		return c.handleDeliveryStatus(ctx, topic, partition, offset, value, false)
 	default:
 		// Also inspect json envelope EventType in case topic name is generic
 		var env state.EventEnvelope
 		if err := json.Unmarshal(value, &env); err == nil {
 			if env.EventType == TopicPostmortemGenerated {
-				return c.handlePostmortemGenerated(ctx, value)
+				return c.handlePostmortemGenerated(ctx, topic, partition, offset, value)
 			}
 		}
 		slog.Debug("ignored unhandled topic", "component", "FSM_CONSUMER", "event", "KAFKA_IGNORED", "topic", topic)
@@ -63,7 +70,7 @@ func (c *FSMConsumer) ConsumeEvent(ctx context.Context, topic string, value []by
 	}
 }
 
-func (c *FSMConsumer) handlePostmortemGenerated(ctx context.Context, value []byte) error {
+func (c *FSMConsumer) handlePostmortemGenerated(ctx context.Context, topic string, partition int, offset int64, value []byte) error {
 	var env state.EventEnvelope
 	if err := json.Unmarshal(value, &env); err != nil {
 		return fmt.Errorf("fsm_consumer: unmarshal postmortem generated envelope: %w", err)
@@ -124,11 +131,11 @@ func (c *FSMConsumer) handlePostmortemGenerated(ctx context.Context, value []byt
 	}
 
 	// Transition to POSTMORTEM_GENERATED
-	if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, correlationID, state.WorkerPostmortemGenerated); err != nil {
+	if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, correlationID, state.WorkerPostmortemGenerated, topic, partition, offset); err != nil {
 		return err
 	}
 	// Immediately transition to DELIVERY_IN_PROGRESS as delivery starts right after postmortem generation
-	if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, correlationID, state.WorkerDeliveryInProgress); err != nil {
+	if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, correlationID, state.WorkerDeliveryInProgress, "", 0, 0); err != nil {
 		return err
 	}
 
@@ -150,7 +157,7 @@ func (c *FSMConsumer) handlePostmortemGenerated(ctx context.Context, value []byt
 		if defIncidentID != "" && !IsStale(ctx, c.store, workerID, errorType, defIncidentID) {
 			slog.Info("found deferred DELIVERED event, fast-forwarding FSM", "component", "FSM_CONSUMER", "event", "DEFERRED_FOUND", "worker_id", workerID, "error_type", errorType)
 			_ = c.store.DeleteDeferredEvent(ctx, workerID, errorType, TopicDeliveryStatus)
-			return c.handleDeliveryStatus(ctx, TopicDeliveryStatus, deferredPayload)
+			return c.handleDeliveryStatus(ctx, TopicDeliveryStatus, partition, offset, deferredPayload, true)
 		} else {
 			slog.Warn("ignoring stale deferred DELIVERED event from old incident", "component", "FSM_CONSUMER", "event", "DEFERRED_STALE", "worker_id", workerID, "old_incident_id", defIncidentID, "current_incident_id", incidentID)
 			_ = c.store.DeleteDeferredEvent(ctx, workerID, errorType, TopicDeliveryStatus)
@@ -168,7 +175,7 @@ type deliveryResultPayload struct {
 	Error         string `json:"error"`
 }
 
-func (c *FSMConsumer) handleDeliveryStatus(ctx context.Context, topic string, value []byte) error {
+func (c *FSMConsumer) handleDeliveryStatus(ctx context.Context, topic string, partition int, offset int64, value []byte, bypassLock bool) error {
 	var payload deliveryResultPayload
 	if err := json.Unmarshal(value, &payload); err != nil {
 		// Attempt unmarshaling as envelope
@@ -212,14 +219,16 @@ func (c *FSMConsumer) handleDeliveryStatus(ctx context.Context, topic string, va
 		return nil
 	}
 
-	locked, err := c.store.AcquireFSMLock(ctx, workerID, errorType, incidentID, 5*time.Second)
-	// TODO: instead of simply returning nil which could signal that no err occured keep the FSM stuck indefinitely, we need to return a specific err signal for this err so that the caller of the method can do a retry e.g. the main.fsmconsumer_loop routine will prevent a kafka commit which effectively retries processing on next loop
-	// This has to be ensure throughout fsmconsumer, because loosing events that progresses the FSM is a fundamental flaw that reduces FSM efficacy, event though leaves FSM trustworthiness intact
-	if err != nil || !locked {
-		slog.Debug("could not acquire lock for delivery status, skipping", "worker_id", workerID, "error_type", errorType)
-		return nil
+	if !bypassLock {
+		locked, err := c.store.AcquireFSMLock(ctx, workerID, errorType, incidentID, 5*time.Second)
+		// TODO: instead of simply returning nil which could signal that no err occured keep the FSM stuck indefinitely, we need to return a specific err signal for this err so that the caller of the method can do a retry e.g. the main.fsmconsumer_loop routine will prevent a kafka commit which effectively retries processing on next loop
+		// This has to be ensure throughout fsmconsumer, because loosing events that progresses the FSM is a fundamental flaw that reduces FSM efficacy, event though leaves FSM trustworthiness intact
+		if err != nil || !locked {
+			slog.Debug("could not acquire lock for delivery status, skipping", "worker_id", workerID, "error_type", errorType)
+			return nil
+		}
+		defer c.store.ReleaseFSMLock(ctx, workerID, errorType, incidentID)
 	}
-	defer c.store.ReleaseFSMLock(ctx, workerID, errorType, incidentID)
 
 	if err := CheckDLQMarker(ctx, c.store, "Attempting to process delivery status event. Checking DLQ Marker.", "FSM_CONSUMER", "process_delivery_status", workerID, errorType, incidentID, payload.CorrelationID); err != nil {
 		return nil
@@ -233,7 +242,7 @@ func (c *FSMConsumer) handleDeliveryStatus(ctx context.Context, topic string, va
 
 	isDLQ := topic == TopicDeliveryDLQ || payload.Status == "dlq"
 	if isDLQ {
-		if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDeliveryFailed); err != nil {
+		if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDeliveryFailed, topic, partition, offset); err != nil {
 			return err
 		}
 	} else if payload.Status == "delivered" {
@@ -259,12 +268,12 @@ func (c *FSMConsumer) handleDeliveryStatus(ctx context.Context, topic string, va
 			if err := c.store.DeferEvent(ctx, workerID, errorType, TopicDeliveryStatus, value, ttl); err != nil {
 				slog.Error("failed to defer early DELIVERED event", "component", "FSM_CONSUMER", "event", "DEFER_ERR", "error", err)
 			} else {
-				slog.Info("deferred early DELIVERED event to Redis", "component", "FSM_CONSUMER", "event", "DEFER_SUCCESS", "worker_id", workerID, "error_type", errorType)
+				slog.Info("deferred early DELIVERED event to etcd", "component", "FSM_CONSUMER", "event", "DEFER_SUCCESS", "worker_id", workerID, "error_type", errorType)
 			}
 			return nil
 		}
 
-		if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDelivered); err != nil {
+		if err := executeFSMTransition(ctx, c.store, c.publisher, c.producer, "FSM_CONSUMER", workerID, errorType, incidentID, payload.CorrelationID, state.WorkerDelivered, topic, partition, offset); err != nil {
 			return err
 		}
 	} else {

@@ -233,8 +233,8 @@ spec:
               value: "$(POD_NAME).aegis-control-plane-headless.{{ include "aegis.namespace" . }}.svc.cluster.local:{{ .Values.controlPlane.grpcPort | default 50051 }}"
             - name: AEGIS_GRPC_ADDRESS
               value: ":{{ .Values.controlPlane.grpcPort | default 50051 }}"
-            - name: AEGIS_REDIS_ADDR
-              value: {{ required "controlPlane.redisAddr is required" .Values.controlPlane.redisAddr | quote }}
+            - name: AEGIS_ETCD_ENDPOINTS
+              value: {{ required "controlPlane.etcdEndpoints is required" .Values.controlPlane.etcdEndpoints | quote }}
             - name: AEGIS_KAFKA_BROKERS
               value: {{ required "controlPlane.kafkaBrokers is required" .Values.controlPlane.kafkaBrokers | quote }}
             - name: AEGIS_DEBUG

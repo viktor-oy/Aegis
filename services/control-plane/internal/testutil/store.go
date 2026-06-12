@@ -109,7 +109,7 @@ func (s *MockStore) ReleaseFSMLock(_ context.Context, workerID string, errorType
 	return nil
 }
 
-func (s *MockStore) SetWorkerState(_ context.Context, state membership.WorkerState) error {
+func (s *MockStore) SetWorkerState(_ context.Context, state membership.WorkerState, topic string, partition int, offset int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := state.WorkerID + ":" + state.ErrorType
@@ -220,7 +220,7 @@ func (s *MockStore) ScanExpiringDeferredEvents(_ context.Context, tolerance time
 	now := time.Now()
 	var states []membership.WorkerState
 	
-	// Mock Store doesn't perfectly simulate Redis string splits easily without importing strings,
+	// Mock Store doesn't perfectly simulate etcd string splits easily without importing strings,
 	// but we can parse the key manually for testing purposes or just mock it.
 	// We'll import strings if we need to. Wait, testutil/store.go doesn't import strings yet.
 	// I should import strings. I'll do that in another block.

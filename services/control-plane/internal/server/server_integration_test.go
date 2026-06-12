@@ -3,8 +3,10 @@
 package server_test
 
 import (
+	"sync"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -27,7 +29,7 @@ var (
 func TestMain(m *testing.M) {
 	serverFactory = testutil.NewCPTestClusterFactory(
 		[]string{"cp-a", "cp-b"},
-		testutils.DefaultRedisAddr,
+		testutils.DefaultEtcdUrls,
 		testutils.DefaultKafkaBrokers,
 		nil,
 	)
@@ -94,11 +96,9 @@ func readExpectedEvents(t *testing.T, brokers []string, workerID string, expecte
 	return events
 }
 
-
-
-func assertNoEvents(t *testing.T, brokers []string, workerID string, topic string) {
+func assertNoEvents(t *testing.T, brokers []string, workerID string, correlationID string, topic string) {
 	t.Helper()
-	testutils.LogInfo(t, "🛡️ Verifying NO events are published for worker %s on %s...", workerID, topic)
+	testutils.LogInfo(t, "🛡️ Verifying NO events are published for worker %s with corr_id %s on %s...", workerID, correlationID, topic)
 	found := make(chan struct{}, 1)
 
 	numPartitions := testutils.GetTopicPartitionCount(topic)
@@ -125,7 +125,7 @@ func assertNoEvents(t *testing.T, brokers []string, workerID string, topic strin
 					continue
 				}
 				var env state.EventEnvelope
-				if err := json.Unmarshal(m.Value, &env); err == nil && env.WorkerID == workerID {
+				if err := json.Unmarshal(m.Value, &env); err == nil && env.WorkerID == workerID && env.CorrelationID == correlationID {
 					select {
 					case found <- struct{}{}:
 					default:
@@ -138,14 +138,14 @@ func assertNoEvents(t *testing.T, brokers []string, workerID string, topic strin
 
 	select {
 	case <-found:
-		t.Fatalf("expected no events for worker %s on %s, but found one", workerID, topic)
+		t.Fatalf("expected no events for worker %s with corr_id %s on %s, but found one", workerID, correlationID, topic)
 	case <-time.After(10 * time.Second):
 		// Success! No events found within 10 seconds.
 	}
 }
 
 func TestIntegration_StreamTelemetry_Accepted(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	client := globalClients[0]
 
@@ -156,13 +156,14 @@ func TestIntegration_StreamTelemetry_Accepted(t *testing.T) {
 
 	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
 
+	correlationID := "corr-" + fmt.Sprint(time.Now().UnixNano())
 	if err := stream.Send(&aegisv1.AgentTelemetry{
 		WorkerId:           workerID,
 		Timestamp:          time.Now().UTC().Format(time.RFC3339Nano),
 		GpuUtilization:     0.5,
 		TemperatureCelsius: 60,
 		ModelServerHealthy: true,
-		CorrelationId:      "corr-1",
+		CorrelationId:      correlationID,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -174,13 +175,13 @@ func TestIntegration_StreamTelemetry_Accepted(t *testing.T) {
 	if resp.DirectiveType != "accepted" {
 		t.Fatalf("expected accepted, got %s", resp.DirectiveType)
 	}
-	if resp.CorrelationId != "corr-1" {
-		t.Fatalf("correlation_id not preserved: got %s", resp.CorrelationId)
+	if resp.CorrelationId != correlationID {
+		t.Fatalf("correlation_id(%s) not preserved: got %s", correlationID, resp.CorrelationId)
 	}
 }
 
 func TestIntegration_StreamTelemetry_Redirect(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	// Two CP members; worker hashing will route to one of them.
 	client := globalClients[0]
@@ -219,45 +220,55 @@ func TestIntegration_StreamTelemetry_Redirect(t *testing.T) {
 }
 
 func TestIntegration_StreamTelemetry_ResourceExhausted(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	client := globalClients[0]
-
-	// Since queue size is 256 globally, we need to flood the queue to exhaust it.
-	// We'll open a stream and send >256 messages rapidly without waiting for Recv.
-	stream, err := client.StreamTelemetry(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
-	var gotExhausted bool
-	for i := 0; i < 300; i++ {
-		if err := stream.Send(&aegisv1.AgentTelemetry{
-			WorkerId:           workerID,
-			Timestamp:          time.Now().UTC().Format(time.RFC3339Nano),
-			ModelServerHealthy: true,
-		}); err != nil {
-			st, ok := status.FromError(err)
-			if ok && st.Code() == codes.ResourceExhausted {
-				gotExhausted = true
-				break
+
+	// Since queue size is 256 globally and consumers are multithreaded (NumCPU),
+	// a single stream cannot overwhelm the queue. We must use multiple concurrent streams.
+	var wg sync.WaitGroup
+	numStreams := 50
+	errChan := make(chan error, numStreams*200)
+
+	for i := 0; i < numStreams; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stream, err := client.StreamTelemetry(context.Background())
+			if err != nil {
+				return
 			}
-			break
-		}
+			for j := 0; j < 200; j++ {
+				if err := stream.Send(&aegisv1.AgentTelemetry{
+					WorkerId:           workerID,
+					Timestamp:          time.Now().UTC().Format(time.RFC3339Nano),
+					ModelServerHealthy: true,
+				}); err != nil {
+					errChan <- err
+					break
+				}
+			}
+			// Drain async errors
+			for j := 0; j < 200; j++ {
+				_, err := stream.Recv()
+				if err != nil {
+					errChan <- err
+					break
+				}
+			}
+		}()
 	}
 
-	// Also check Recv for the async error.
-	if !gotExhausted {
-		for i := 0; i < 300; i++ {
-			_, err := stream.Recv()
-			if err != nil {
-				st, ok := status.FromError(err)
-				if ok && st.Code() == codes.ResourceExhausted {
-					gotExhausted = true
-				}
-				break
-			}
+	wg.Wait()
+	close(errChan)
+
+	var gotExhausted bool
+	for err := range errChan {
+		st, ok := status.FromError(err)
+		if ok && st.Code() == codes.ResourceExhausted {
+			gotExhausted = true
+			break
 		}
 	}
 
@@ -291,7 +302,7 @@ func TestIntegration_StreamTelemetry_ResourceExhausted(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	client := globalClients[0]
 
@@ -302,6 +313,7 @@ func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
 
 	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
 
+	correlationID := "corr-" + fmt.Sprint(time.Now().UnixNano())
 	// Send 3 samples with sustained high temperature (>=85C) to trigger detection.
 	for i := 0; i < 3; i++ {
 		if err := stream.Send(&aegisv1.AgentTelemetry{
@@ -309,7 +321,7 @@ func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
 			Timestamp:          time.Now().UTC().Format(time.RFC3339Nano),
 			TemperatureCelsius: 90,
 			ModelServerHealthy: true,
-			CorrelationId:      "corr-overheat",
+			CorrelationId:      correlationID,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -339,8 +351,8 @@ func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
 	if env.WorkerID != workerID {
 		t.Errorf("expected worker_id=%s, got %s", workerID, env.WorkerID)
 	}
-	if env.CorrelationID != "corr-overheat" {
-		t.Errorf("expected correlation_id=corr-overheat, got %s", env.CorrelationID)
+	if env.CorrelationID != correlationID {
+		t.Errorf("expected correlation_id=%s, got %s", correlationID, env.CorrelationID)
 	}
 	if env.IncidentID == "" {
 		t.Error("incident_id should not be empty")
@@ -351,7 +363,7 @@ func TestIntegration_TelemetryProcessing_IncidentDetected(t *testing.T) {
 }
 
 func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	client := globalClients[0]
 
@@ -363,6 +375,7 @@ func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
 	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
 
 	// Send healthy telemetry — no incident should be created.
+	var correlationId = "corr-" + fmt.Sprint(time.Now().UnixNano())
 	for i := 0; i < 5; i++ {
 		if err := stream.Send(&aegisv1.AgentTelemetry{
 			WorkerId:           workerID,
@@ -372,6 +385,7 @@ func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
 			ModelServerHealthy: true,
 			VramUsedBytes:      20,
 			VramTotalBytes:     100,
+			CorrelationId:      correlationId,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -381,11 +395,11 @@ func TestIntegration_TelemetryProcessing_HealthyNoIncident(t *testing.T) {
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	assertNoEvents(t, testutils.DefaultKafkaBrokers, workerID, "aegis.incident.detected")
+	assertNoEvents(t, testutils.DefaultKafkaBrokers, workerID, correlationId, "aegis.incident.detected")
 }
 
 func TestIntegration_TelemetryProcessing_ModelUnhealthyImmediate(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	client := globalClients[0]
 
@@ -401,7 +415,7 @@ func TestIntegration_TelemetryProcessing_ModelUnhealthyImmediate(t *testing.T) {
 		WorkerId:           workerID,
 		Timestamp:          time.Now().UTC().Format(time.RFC3339Nano),
 		ModelServerHealthy: false,
-		CorrelationId:      "corr-crash",
+		CorrelationId:      "corr-" + fmt.Sprint(time.Now().UnixNano()),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +435,7 @@ func TestIntegration_TelemetryProcessing_ModelUnhealthyImmediate(t *testing.T) {
 }
 
 func TestIntegration_SubmitDiagnostics_Accepted(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	client := globalClients[0]
 
@@ -430,7 +444,7 @@ func TestIntegration_SubmitDiagnostics_Accepted(t *testing.T) {
 		IncidentId:       "inc_test123",
 		DiagnosticStatus: "complete",
 		JsonPayload:      `{"ok":true}`,
-		CorrelationId:    "corr-diag",
+		CorrelationId:    "corr-" + fmt.Sprint(time.Now().UnixNano()),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -441,7 +455,7 @@ func TestIntegration_SubmitDiagnostics_Accepted(t *testing.T) {
 }
 
 func TestIntegration_SubmitDiagnostics_InvalidArgument(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
 	client := globalClients[0]
 
@@ -457,12 +471,12 @@ func TestIntegration_SubmitDiagnostics_InvalidArgument(t *testing.T) {
 }
 
 func TestIntegration_HandleDetection_CorruptFSM_DropsTelemetry(t *testing.T) {
-	testutils.WipeTestState(t, "redis")
+	testutils.WipeTestState(t, "etcd")
 
-	// 1. Manually insert a DLQ marker for a worker in Redis.
+	// 1. Manually insert a DLQ marker for a worker in Etcd.
 	workerID := testutil.GetWorkerForCP(t, "cp-a", []string{"cp-a", "cp-b"})
-	store := membership.NewRedisStore(testutils.DefaultRedisAddr)
-	if err := store.SetDLQMarker(context.Background(), workerID, string(state.FailureLatencySpike), "manual corrupt marker"); err != nil {
+	store, _ := membership.NewEtcdStore([]string{testutils.DefaultEtcdUrls})
+	if err := store.SetDLQMarker(context.Background(), workerID, string(state.FailureSynthetic), "manual corrupt marker"); err != nil {
 		t.Fatalf("failed to set DLQ marker: %v", err)
 	}
 
@@ -473,12 +487,13 @@ func TestIntegration_HandleDetection_CorruptFSM_DropsTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var correlationId = "corr-" + fmt.Sprint(time.Now().UnixNano())
 	if err := stream.Send(&aegisv1.AgentTelemetry{
-		WorkerId:             workerID,
-		Timestamp:            time.Now().UTC().Format(time.RFC3339Nano),
-		ModelServerHealthy:   true,
-		SyntheticFailure:     string(state.FailureLatencySpike),
-		CorrelationId:        "corr-drop-test",
+		WorkerId:           workerID,
+		Timestamp:          time.Now().UTC().Format(time.RFC3339Nano),
+		ModelServerHealthy: true,
+		SyntheticFailure:   string(state.FailureSynthetic),
+		CorrelationId:      correlationId,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -493,5 +508,5 @@ func TestIntegration_HandleDetection_CorruptFSM_DropsTelemetry(t *testing.T) {
 
 	// 3. Wait briefly to allow async processing, then verify NO incident detected event was emitted.
 	time.Sleep(2 * time.Second)
-	assertNoEvents(t, testutils.DefaultKafkaBrokers, workerID, "aegis.incident.detected")
+	assertNoEvents(t, testutils.DefaultKafkaBrokers, workerID, correlationId, "aegis.incident.detected")
 }

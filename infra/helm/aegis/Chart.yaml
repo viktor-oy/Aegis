@@ -10,10 +10,10 @@ dependencies:
     version: 31.3.1
     repository: https://charts.bitnami.com/bitnami
     condition: kafka.enabled
-  - name: redis
-    version: 25.3.2
+  - name: etcd
+    version: 10.2.2
     repository: https://charts.bitnami.com/bitnami
-    condition: redis.enabled
+    condition: etcd.enabled
   - name: mailpit
     version: 0.34.1
     repository: https://jouve.github.io/charts/

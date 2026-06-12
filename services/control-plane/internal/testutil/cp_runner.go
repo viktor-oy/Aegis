@@ -3,6 +3,7 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -63,7 +64,7 @@ func getFreePort() (int, error) {
 }
 
 // startCPNode executes the pre-compiled control plane binary as a child process.
-func startCPNode(id, address, redisAddr string, kafkaBrokers []string, extraEnv map[string]string, binPath string) (string, *exec.Cmd, *strings.Builder, error) {
+func startCPNode(id, address, etcdUrls string, kafkaBrokers []string, extraEnv map[string]string, binPath string) (string, *exec.Cmd, *strings.Builder, *strings.Builder, error) {
 	// Pick a unique high port using atomic counter to avoid TOCTOU collisions
 	port := atomic.AddInt32(&nextPort, 1)
 	grpcAddr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -74,7 +75,7 @@ func startCPNode(id, address, redisAddr string, kafkaBrokers []string, extraEnv 
 		"AEGIS_CP_ID="+id,
 		"AEGIS_CP_ADDRESS="+address,
 		"AEGIS_GRPC_ADDRESS="+grpcAddr,
-		"AEGIS_REDIS_ADDR="+redisAddr,
+		"AEGIS_ETCD_URLS="+etcdUrls,
 		"AEGIS_KAFKA_BROKERS="+strings.Join(kafkaBrokers, ","),
 		"AEGIS_QUEUE_SIZE=256",
 		"AEGIS_MEMBERSHIP_INTERVAL=50ms",
@@ -83,14 +84,20 @@ func startCPNode(id, address, redisAddr string, kafkaBrokers []string, extraEnv 
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	var stderrBuf strings.Builder
-	cmd.Stderr = &stderrBuf
-	cmd.Stdout = os.Stdout
-
-	if err := cmd.Start(); err != nil {
-		return "", nil, nil, fmt.Errorf("failed to start main.go subprocess for %s: %v", id, err)
+	var stdoutBuf strings.Builder
+	if os.Getenv("AEGIS_TEST_VERBOSE") == "true" {
+		cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
+		cmd.Stdout = io.MultiWriter(&stdoutBuf, os.Stdout)
+	} else {
+		cmd.Stderr = &stderrBuf
+		cmd.Stdout = &stdoutBuf
 	}
 
-	return grpcAddr, cmd, &stderrBuf, nil
+	if err := cmd.Start(); err != nil {
+		return "", nil, nil, nil, fmt.Errorf("failed to start main.go subprocess for %s: %v", id, err)
+	}
+
+	return grpcAddr, cmd, &stderrBuf, &stdoutBuf, nil
 }
 
 // teardownCPNode gracefully shuts down the CP process.
@@ -99,10 +106,10 @@ func teardownCPNode(cmd *exec.Cmd) {
 		return
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	
+
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	
+
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -111,7 +118,7 @@ func teardownCPNode(cmd *exec.Cmd) {
 }
 
 // waitForCPReady polls the provided CP process gRPC address until it responds successfully.
-func waitForCPReady(grpcAddr string, cmd *exec.Cmd, stderrBuf *strings.Builder) (aegisv1.ControlPlaneTelemetryClient, *grpc.ClientConn, error) {
+func waitForCPReady(grpcAddr string, cmd *exec.Cmd, stderrBuf *strings.Builder, stdoutBuf *strings.Builder) (aegisv1.ControlPlaneTelemetryClient, *grpc.ClientConn, error) {
 	var conn *grpc.ClientConn
 	var client aegisv1.ControlPlaneTelemetryClient
 	var err error
@@ -133,7 +140,7 @@ func waitForCPReady(grpcAddr string, cmd *exec.Cmd, stderrBuf *strings.Builder) 
 	}
 	if !ready {
 		_ = cmd.Process.Kill()
-		return nil, nil, fmt.Errorf("main.go gRPC server failed to become ready on %s, stderr: %s", grpcAddr, stderrBuf.String())
+		return nil, nil, fmt.Errorf("main.go gRPC server failed to become ready on %s, stderr: %s, stdout: %s", grpcAddr, stderrBuf.String(), stdoutBuf.String())
 	}
 	return client, conn, nil
 }
@@ -144,13 +151,13 @@ type CPTestClusterFactory struct {
 	conns        []*grpc.ClientConn
 	clients      []aegisv1.ControlPlaneTelemetryClient
 	nodeIDs      []string
-	redisAddr    string
+	etcdUrls     string
 	kafkaBrokers []string
 	extraEnv     map[string]string
 	binPath      string
 }
 
-func NewCPTestClusterFactory(nodeIDs []string, redisAddr string, kafkaBrokers []string, extraEnv map[string]string) *CPTestClusterFactory {
+func NewCPTestClusterFactory(nodeIDs []string, etcdUrls string, kafkaBrokers []string, extraEnv map[string]string) *CPTestClusterFactory {
 	if extraEnv == nil {
 		extraEnv = make(map[string]string)
 	}
@@ -159,7 +166,7 @@ func NewCPTestClusterFactory(nodeIDs []string, redisAddr string, kafkaBrokers []
 	}
 	return &CPTestClusterFactory{
 		nodeIDs:      nodeIDs,
-		redisAddr:    redisAddr,
+		etcdUrls:     etcdUrls,
 		kafkaBrokers: kafkaBrokers,
 		extraEnv:     extraEnv,
 	}
@@ -191,8 +198,8 @@ func (f *CPTestClusterFactory) StartCluster(t *testing.T) []aegisv1.ControlPlane
 
 		for _, id := range f.nodeIDs {
 			address := fmt.Sprintf("%s:50051", id)
-			
-			grpcAddress, cmd, stderrBuf, err := startCPNode(id, address, f.redisAddr, f.kafkaBrokers, f.extraEnv, f.binPath)
+
+			grpcAddress, cmd, stderrBuf, stdoutBuf, err := startCPNode(id, address, f.etcdUrls, f.kafkaBrokers, f.extraEnv, f.binPath)
 			if err != nil {
 				if t != nil {
 					t.Fatalf("failed to start %s: %v", id, err)
@@ -201,7 +208,7 @@ func (f *CPTestClusterFactory) StartCluster(t *testing.T) []aegisv1.ControlPlane
 			}
 			f.cmds = append(f.cmds, cmd)
 
-			client, conn, err := waitForCPReady(grpcAddress, cmd, stderrBuf)
+			client, conn, err := waitForCPReady(grpcAddress, cmd, stderrBuf, stdoutBuf)
 			if err != nil {
 				if t != nil {
 					t.Fatalf("failed to wait for %s: %v", id, err)
@@ -213,7 +220,7 @@ func (f *CPTestClusterFactory) StartCluster(t *testing.T) []aegisv1.ControlPlane
 		}
 
 		// Give the nodes enough time to tick their membership loops and build the hashring
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(600 * time.Millisecond)
 	})
 
 	return f.clients

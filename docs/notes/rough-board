@@ -77,10 +77,14 @@ mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n 
 mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli DEL "aegis:cp:dlq:corrupt:*"   
 
 mise exec -- kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- redis-cli DEL "aegis:cp:worker:state:*" 
-docker image prune -a -f
+
 kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- sh -c 'redis-cli KEYS "aegis:cp:dlq:corrupt:*" | xargs redis-cli DEL'
 
 kubectl --context kind-aegis-scenario exec aegis-redis-master-0 -n aegis-system -- sh -c 'redis-cli KEYS "aegis:cp:dlq:corrupt:*" | xargs redis-cli DEL'
+
+for i in {1..5}; do mise exec -- go test -v -count=1 -p 1 -tags=integration -run ^TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding$ ./services/control-plane/internal/incident/... || break; done
+
+docker image prune -a -f
 
 docker builder prune -a -f
 

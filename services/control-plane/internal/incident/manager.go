@@ -33,8 +33,8 @@ type Store interface {
 	*/
 	AcquireFSMLock(ctx context.Context, workerID string, errorType string, incidentID string, ttl time.Duration) (bool, error)
 	ReleaseFSMLock(ctx context.Context, workerID string, errorType string, incidentID string) error
-	SetWorkerState(ctx context.Context, st membership.WorkerState) error
-	// GetWorkerState retrieves the FSM state. Redis must be the authoritative source of truth
+	SetWorkerState(ctx context.Context, st membership.WorkerState, topic string, partition int, offset int64) error
+	// GetWorkerState retrieves the FSM state. etcd must be the authoritative source of truth
 	// so that any CP replica can inherit the FSM if the original handling CP dies or the hash ring rebalances.
 	// No CP should save or find worker/incident state locally in-memory.
 	GetWorkerState(ctx context.Context, workerID string, errorType string) (*membership.WorkerState, error)
@@ -80,7 +80,7 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	var incidentID, correlationID string
 
 	// Check if there is an existing state for this error type.
-	// We read this from Redis (the authoritative state) rather than in-memory so we can inherit the FSM
+	// We read this from etcd (the authoritative state) rather than in-memory so we can inherit the FSM
 	// from a previous CP that may have died or lost the agent due to hash ring rebalancing.
 	existingState, err := m.store.GetWorkerState(ctx, result.WorkerID, string(result.FailureType))
 	if err == nil && existingState != nil && existingState.IncidentID != "" && existingState.CurrentState != string(state.WorkerResolved) && existingState.CurrentState != string(state.WorkerHealthy) {
@@ -127,7 +127,7 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 
 	slog.Info("Incident detected and new FSM initiated", "component", "INCIDENT_MANAGER", "event", "FSM_INITIATED", "worker_id", inc.WorkerID, "incident_id", inc.IncidentID, "failure_type", inc.FailureType, "corr_id", inc.CorrelationID)
 
-	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerSuspected); err != nil {
+	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerSuspected, "", 0, 0); err != nil {
 		if errors.Is(err, ErrCorruptFSM) {
 			return state.Incident{}, false, nil
 		}
@@ -143,7 +143,7 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	}
 
 	inc.State = state.WorkerDiagnosticsTriggered
-	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerDiagnosticsTriggered); err != nil {
+	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerDiagnosticsTriggered, "", 0, 0); err != nil {
 		if errors.Is(err, ErrCorruptFSM) {
 			return state.Incident{}, false, nil
 		}
@@ -177,7 +177,7 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	}
 
 	inc.State = state.WorkerDiagnosticsCollected
-	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerDiagnosticsCollected); err != nil {
+	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerDiagnosticsCollected, "", 0, 0); err != nil {
 		if errors.Is(err, ErrCorruptFSM) {
 			return state.Incident{}, false, nil
 		}
@@ -194,7 +194,7 @@ func (m *Manager) HandleDetection(ctx context.Context, result state.DetectionRes
 	}
 
 	inc.State = state.WorkerPostmortemRequested
-	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerPostmortemRequested); err != nil {
+	if err := executeFSMTransition(ctx, m.store, m.publisher, m.producer, "INCIDENT_MANAGER", inc.WorkerID, string(inc.FailureType), inc.IncidentID, inc.CorrelationID, state.WorkerPostmortemRequested, "", 0, 0); err != nil {
 		if errors.Is(err, ErrCorruptFSM) {
 			return state.Incident{}, false, nil
 		}
@@ -249,7 +249,7 @@ func (m *Manager) publish(ctx context.Context, topic string, eventType string, i
 }
 
 // MarkFSMCorrupt is a DRY helper used by the FSM consumer and Watchdog to mark a worker's FSM as corrupt,
-// freeze it in Redis, and emit an alert to the DLQ topic.
+// freeze it in etcd, and emit an alert to the DLQ topic.
 func MarkFSMCorrupt(ctx context.Context, store Store, publisher kafka.Publisher, producer string, inc state.Incident, toState state.WorkerHealthState, errMsg string, extraPayload map[string]any) error {
 	if err := store.SetDLQMarker(ctx, inc.WorkerID, string(inc.FailureType), errMsg); err != nil {
 		return fmt.Errorf("failed to set DLQ marker: %w", err)

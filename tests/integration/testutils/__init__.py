@@ -12,7 +12,7 @@ def find_project_root() -> str:
 
 def wipe_infra_state(targets: str = ""):
     """
-    Wipes the specified infra (redis, kafka). 
+    Wipes the specified infra (etcd, kafka). 
     If targets is empty, wipes both.
     """
     root_dir = find_project_root()

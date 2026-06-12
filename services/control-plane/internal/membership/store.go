@@ -23,7 +23,7 @@ type Store interface {
 	AcquireFSMLock(ctx context.Context, workerID string, errorType string, incidentID string, ttl time.Duration) (bool, error)
 	ReleaseFSMLock(ctx context.Context, workerID string, errorType string, incidentID string) error
 
-	SetWorkerState(ctx context.Context, state WorkerState) error
+	SetWorkerState(ctx context.Context, state WorkerState, topic string, partition int, offset int64) error
 	GetWorkerState(ctx context.Context, workerID string, errorType string) (*WorkerState, error)
 	DeleteWorkerState(ctx context.Context, workerID string, errorType string) error
 	ListActiveWorkerStates(ctx context.Context) ([]WorkerState, error)

@@ -38,7 +38,7 @@ def wait_for_infra(usecase: str, timeout_seconds: int = 600, logger: logging.Log
     
     tcp_ports = [
         ports["kafka_bootstrap"],
-        ports["redis"],
+        ports["etcd"],
         ports["mailpit_smtp"]
     ] + ports["kafka_brokers"]
     

@@ -66,7 +66,7 @@ controlPlane:
   image: "aegis-control-plane:latest"
   imagePullPolicy: IfNotPresent
   grpcPort: 50051
-  redisAddr: "aegis-redis-master.aegis-system.svc.cluster.local:6379"
+  etcdEndpoints: "aegis-etcd.aegis-system.svc.cluster.local:2379"
   kafkaBrokers: "aegis-kafka.aegis-system.svc.cluster.local:9092"
   debug: "false"
   queueSize: 256
@@ -121,10 +121,6 @@ sink:
 kafka:
   enabled: true
   fullnameOverride: "aegis-kafka"
-  image:
-    registry: docker.io
-    repository: bitnamilegacy/kafka
-    tag: "3.9.0-debian-12-r6"
   controller:
     extraConfig: |-
       auto.create.topics.enable=false
@@ -139,19 +135,12 @@ kafka:
     capabilities:
       drop: ["ALL"]
 
-redis:
+etcd:
   enabled: true
-  fullnameOverride: "aegis-redis"
-  image:
-    registry: docker.io
-    repository: bitnamilegacy/redis
-    tag: "7.4.3-debian-12-r0"
-  architecture: "standalone"
+  fullnameOverride: "aegis-etcd"
   auth:
-    enabled: false
-  commonConfiguration: |-
-    appendonly yes
-    save ""
+    rbac:
+      create: false
   podSecurityContext:
     enabled: true
     runAsUser: 1001
@@ -160,7 +149,6 @@ redis:
     enabled: true
     runAsNonRoot: true
     allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: true
     capabilities:
       drop: ["ALL"]
 

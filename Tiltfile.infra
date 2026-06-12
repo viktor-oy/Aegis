@@ -19,7 +19,7 @@ raw_ports = port_map_data.get(aegis_env, port_map_data['local'])
 infra_ports = {
     'kafka_bootstrap': str(raw_ports['kafka_bootstrap']),
     'kafka_brokers': [str(p) for p in raw_ports['kafka_brokers']],
-    'redis': [str(raw_ports['redis']) + ":6379"],
+    'etcd': [str(raw_ports['etcd']) + ":2379"],
     'llm': [str(raw_ports['llm']) + ":11434"],
     'mailpit': [str(raw_ports['mailpit_smtp']) + ":1025", str(raw_ports['mailpit_http']) + ":8025"]
 }
@@ -44,7 +44,7 @@ local_resource(
 watch_file('infra/kustomize')
 watch_file('infra/helm')
 
-# Apply all Kustomize base infra resources (Kafka, Redis, PostgreSQL, LLM))
+# Apply all Kustomize base infra resources (Kafka, Etcd, PostgreSQL, LLM))
 default_overlay = 'infra/kustomize/overlays/' + aegis_env if aegis_env in ['local', 'intg-test'] else 'infra/kustomize/overlays/local'
 kustomize_dir = os.getenv('AEGIS_KUSTOMIZE_OVERLAY', default_overlay)
 watch_file(kustomize_dir)
@@ -93,6 +93,6 @@ local_resource(
     labels=['infra'],
 )
     
-k8s_resource('aegis-redis-master', labels=['infra'], port_forwards=infra_ports['redis'])
+k8s_resource('aegis-etcd', labels=['infra'], port_forwards=infra_ports['etcd'])
 k8s_resource('aegis-llm', labels=['infra'], port_forwards=infra_ports['llm'])
 k8s_resource('aegis-mailpit', labels=['infra'], port_forwards=infra_ports['mailpit'])

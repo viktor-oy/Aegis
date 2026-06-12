@@ -31,10 +31,10 @@ func TestWorkerStateLifecycle(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 	}
 
-	if err := store.SetWorkerState(ctx, state1); err != nil {
+	if err := store.SetWorkerState(ctx, state1, "", 0, 0); err != nil {
 		t.Fatalf("SetWorkerState failed: %v", err)
 	}
-	if err := store.SetWorkerState(ctx, state2); err != nil {
+	if err := store.SetWorkerState(ctx, state2, "", 0, 0); err != nil {
 		t.Fatalf("SetWorkerState failed: %v", err)
 	}
 

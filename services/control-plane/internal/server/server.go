@@ -131,6 +131,9 @@ func (cp *ControlPlane) ExpireHeartbeats(ctx context.Context, now time.Time) err
 		if _, _, err := cp.manager.HandleDetection(ctx, result); err != nil {
 			return err
 		}
+		cp.mu.Lock()
+		delete(cp.windows, expired.WorkerID)
+		cp.mu.Unlock()
 	}
 	return nil
 }
