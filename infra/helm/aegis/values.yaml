@@ -10,7 +10,7 @@ agent:
   simulationMode: "normal"
   telemetryDataSource: "MOCK"
   bootstrapUrls: "aegis-control-plane:50051"
-  workerIdFormat: "$(POD_NAMESPACE)--$(POD_NAME)"
+  workerIdFormat: "$(NODE_NAME)"
   apiPort: 8080
   heartbeatIntervalSeconds: 15
   resources:

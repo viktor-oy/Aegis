@@ -9,7 +9,7 @@ agent:
   imagePullPolicy: IfNotPresent
   simulationMode: "normal"
   telemetryDataSource: "MOCK"
-  workerIdFormat: "$(POD_NAMESPACE)--$(POD_NAME)"
+  workerIdFormat: "$(NODE_NAME)"
   resources:
     requests:
       cpu: 10m

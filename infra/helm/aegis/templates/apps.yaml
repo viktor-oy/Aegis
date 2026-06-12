@@ -29,16 +29,13 @@ spec:
           env:
             - name: AEGIS_CP_BOOTSTRAP_URLS
               value: {{ .Values.agent.bootstrapUrls | default "aegis-control-plane:50051" | quote }}
-            - name: POD_NAMESPACE
+
+            - name: NODE_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: metadata.namespace
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
+                  fieldPath: spec.nodeName
             - name: AEGIS_WORKER_ID
-              value: {{ .Values.agent.workerIdFormat | default "$(POD_NAMESPACE)--$(POD_NAME)" | quote }}
+              value: {{ .Values.agent.workerIdFormat | default "$(NODE_NAME)" | quote }}
             - name: AEGIS_SIMULATION_MODE
               value: {{ .Values.agent.simulationMode | default "normal" | quote }}
             - name: AEGIS_TELEMETRY_DATA_SOURCE

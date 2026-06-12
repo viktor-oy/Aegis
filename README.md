@@ -302,7 +302,7 @@ Root-level test layout:
 
 ### Engineering Decisions & Test Infrastructure
 
-1. **Default Worker ID Formatting**: The default `Worker ID` for agents is intentionally formatted as a composite key (`$(POD_NAMESPACE)--$(POD_NAME)`) injected via the Downward API, rather than a raw pod name or UUID. This allows the SRE/developer reading the generated postmortem to instantly identify the namespace and specific node pod that failed, speeding up incident response times.
+1. **Default Worker ID Formatting**: The default `Worker ID` for agents is intentionally formatted to use the Kubernetes Node Name (`$(NODE_NAME)`) injected via the Downward API, rather than an ephemeral pod name. This ensures identity stability: if a DaemonSet agent pod is restarted or evicted, it continues to identify the same underlying physical or virtual node, preventing the Control Plane from detecting false missed heartbeats for a healthy node.
 
 To keep testing consistent, output clean, and performance highly optimized across local/CI, we enforce a few strict conventions:
 
