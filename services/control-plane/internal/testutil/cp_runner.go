@@ -69,6 +69,8 @@ func startCPNode(id, address, etcdUrls string, kafkaBrokers []string, extraEnv m
 	port := atomic.AddInt32(&nextPort, 1)
 	grpcAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
+	logFilePath := fmt.Sprintf("/tmp/aegis-integration-tests-cp--%s--%s.log", id, time.Now().Format("20060102_150405"))
+
 	cmd := exec.Command(binPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(os.Environ(),
@@ -79,18 +81,36 @@ func startCPNode(id, address, etcdUrls string, kafkaBrokers []string, extraEnv m
 		"AEGIS_KAFKA_BROKERS="+strings.Join(kafkaBrokers, ","),
 		"AEGIS_QUEUE_SIZE=256",
 		"AEGIS_MEMBERSHIP_INTERVAL=50ms",
+		"AEGIS_DEBUG=true",
 	)
 	for k, v := range extraEnv {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+
 	var stderrBuf strings.Builder
 	var stdoutBuf strings.Builder
+
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open test log file %s: %v\n", logFilePath, err)
+	}
+
 	if os.Getenv("AEGIS_TEST_VERBOSE") == "true" {
-		cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
-		cmd.Stdout = io.MultiWriter(&stdoutBuf, os.Stdout)
+		if logFile != nil {
+			cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr, logFile)
+			cmd.Stdout = io.MultiWriter(&stdoutBuf, os.Stdout, logFile)
+		} else {
+			cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
+			cmd.Stdout = io.MultiWriter(&stdoutBuf, os.Stdout)
+		}
 	} else {
-		cmd.Stderr = &stderrBuf
-		cmd.Stdout = &stdoutBuf
+		if logFile != nil {
+			cmd.Stderr = io.MultiWriter(&stderrBuf, logFile)
+			cmd.Stdout = io.MultiWriter(&stdoutBuf, logFile)
+		} else {
+			cmd.Stderr = &stderrBuf
+			cmd.Stdout = &stdoutBuf
+		}
 	}
 
 	if err := cmd.Start(); err != nil {

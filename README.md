@@ -576,6 +576,13 @@ chain:
 > **FSM CORRUPTION WARNING IN SCENARIOS**
 > If your `runner.yaml` uses the `aegis-cli` action to forcefully resolve an incident while background background processes (like the AI Composer or Sink Worker retries) are still executing, you will trigger the exact FSM corruption race condition described in the CLI section above. Always use `pause` or `wait` actions to let FSM states cleanly settle before issuing an automated repair.
 
+### Local & Integration Test Logging
+Because integration tests (`make test-control-plane-intg`) and scenario runner executions run background processes or spawn local Go processes (`cp-a`, `cp-b`), their logs are not centrally aggregated and can clutter test output. To ensure an unbroken debug trail during complex FSM testing without polluting production configurations, Aegis employs a robust file-logging mechanism natively supported by the test frameworks:
+- **Scenario Runner:** Core orchestrator logs are exported to `/tmp/aegis_scenario_runner_<timestamp>.log`.
+- **Control Plane Local Subprocesses:** The integration test harness automatically streams complete `DEBUG` level control-plane logs to `/tmp/aegis-integration-tests-cp-<id>-<timestamp>.log` regardless of whether the `AEGIS_TEST_VERBOSE` flag is enabled.
+
+When diagnosing tricky split-brain, sharding, or watchdog race conditions locally, check these `/tmp` files to trace exact FSM state transitions across nodes.
+
 > [!WARNING]
 > **Performance Warning on Large Clusters:** 
 > Running `kind` locally means all Kubernetes nodes are massive Docker containers sharing your host's CPU pool. Anecdotally, attempting to scale to `node.count: 7` on an 11-core M3 Pro choked the Kubernetes API server due to CPU starvation, causing `TLS handshake timeout` errors during `kubectl apply`. A `node.count` of 3 to 5 is the sweet spot for robust local simulations without starving your host machine!
