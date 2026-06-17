@@ -303,6 +303,11 @@ Root-level test layout:
 ### Engineering Decisions & Test Infrastructure
 
 1. **Default Worker ID Formatting**: The default `Worker ID` for agents is intentionally formatted to use the Kubernetes Node Name (`$(NODE_NAME)`) injected via the Downward API, rather than an ephemeral pod name. This ensures identity stability: if a DaemonSet agent pod is restarted or evicted, it continues to identify the same underlying physical or virtual node, preventing the Control Plane from detecting false missed heartbeats for a healthy node.
+2. **Heartbeat Tolerance & Network Jitter**: The Agent ping interval (`AEGIS_HEARTBEAT_INTERVAL_SECONDS`) and the Control Plane expiry window (`heartbeatExpiry`) are strictly separated to guarantee temporal fairness.
+
+   > [!WARNING]
+   > The Control Plane's `heartbeatExpiry` must **ALWAYS** be configured significantly higher (e.g. 3x) than the Agent's ping interval!
+   > If the Agent pings every 5s, the CP expiry should be 15s. This 10s buffer absorbs network jitter, queuing delays, and "Stop-The-World" (STW) Garbage Collection pauses in Python/Go, preventing healthy GPUs from being falsely flagged as dead.
 
 To keep testing consistent, output clean, and performance highly optimized across local/CI, we enforce a few strict conventions:
 

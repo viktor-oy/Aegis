@@ -99,11 +99,37 @@ func (cp *ControlPlane) Ingest(ctx context.Context, sample state.TelemetrySample
 	}
 }
 
+func (cp *ControlPlane) addAndEvaluate(sample state.TelemetrySample) (state.DetectionResult, bool, bool) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	window := cp.windows[sample.WorkerID]
+	if window == nil {
+		window = detection.NewWindow(cp.rules)
+		cp.windows[sample.WorkerID] = window
+	}
+	
+	if !window.IsFresh(sample) {
+		return state.DetectionResult{}, false, false
+	}
+
+	result, detected := window.Add(sample)
+	if detected {
+		window.Clear()
+	}
+	return result, detected, true
+}
+
 func (cp *ControlPlane) ProcessOne(ctx context.Context) (bool, error) {
 	select {
 	case sample := <-cp.queue:
-		cp.tracker.Observe(sample.WorkerID, sample.Timestamp)
-		result, detected := cp.addAndEvaluate(sample)
+		result, detected, isFresh := cp.addAndEvaluate(sample)
+		if !isFresh {
+			// Drop stale or out-of-order telemetry silently
+			return true, nil
+		}
+		
+		cp.tracker.Observe(sample.WorkerID, sample.ReceivedAt)
+		
 		if detected {
 			slog.Warn("failure detected for worker", "component", "GRPC_SERVER", "event", "AGENT_FAILURE_DETECTED", "worker_id", sample.WorkerID, "reason", result.Reason)
 			_, _, err := cp.manager.HandleDetection(ctx, result)
@@ -149,17 +175,3 @@ func (cp *ControlPlane) NextHeartbeatDeadline() (heartbeat.HeartbeatDeadline, bo
 	return cp.tracker.NextDeadline()
 }
 
-func (cp *ControlPlane) addAndEvaluate(sample state.TelemetrySample) (state.DetectionResult, bool) {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	window := cp.windows[sample.WorkerID]
-	if window == nil {
-		window = detection.NewWindow(cp.rules)
-		cp.windows[sample.WorkerID] = window
-	}
-	result, detected := window.Add(sample)
-	if detected {
-		window.Clear()
-	}
-	return result, detected
-}

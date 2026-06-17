@@ -43,6 +43,16 @@ func (w *Window) Clear() {
 	w.samples = nil
 }
 
+func (w *Window) IsFresh(sample state.TelemetrySample) bool {
+	if len(w.samples) == 0 {
+		return true
+	}
+	last := w.samples[len(w.samples)-1]
+	// Using Agent's timestamp as a monotonic sequence number
+	// If the new sample is older than or equal to the last seen sample, it's out of order or stale.
+	return sample.Timestamp.After(last.Timestamp)
+}
+
 func (w *Window) Add(sample state.TelemetrySample) (state.DetectionResult, bool) {
 	w.samples = append(w.samples, sample)
 	limit := max(w.rules.SustainedSampleCount, 8)

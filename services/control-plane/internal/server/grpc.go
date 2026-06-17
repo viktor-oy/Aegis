@@ -67,9 +67,11 @@ func telemetryFromProto(msg *aegisv1.AgentTelemetry) state.TelemetrySample {
 	if err != nil {
 		ts = time.Now().UTC()
 	}
+	receivedAt := time.Now()
 	return state.TelemetrySample{
 		WorkerID:             msg.GetWorkerId(),
 		Timestamp:            ts,
+		ReceivedAt:           receivedAt,
 		GPUUtilization:       msg.GetGpuUtilization(),
 		VRAMUsedBytes:        msg.GetVramUsedBytes(),
 		VRAMTotalBytes:       msg.GetVramTotalBytes(),

@@ -47,6 +47,7 @@ const (
 type TelemetrySample struct {
 	WorkerID             string
 	Timestamp            time.Time
+	ReceivedAt           time.Time
 	GPUUtilization       float64
 	VRAMUsedBytes        uint64
 	VRAMTotalBytes       uint64

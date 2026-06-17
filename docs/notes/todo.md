@@ -18,11 +18,10 @@ A brief table or summary of the metrics exactly before the crash. Elite teams do
 - agent(Captures Dump/stacktrace -> Sanitizes&removes sensitive confidential details -> Summarizes) -> CP -> composer receives dumps/stacktrace of GPU, adds a summarized version to prompt, then append the dump/stacktrace at at the end(not in the prompt) of the AI-gen postmortem
 - use any of kafka topic namespacing, separate kind cluster for test, test containers. And remove Payload Filtering and other unnecessary constructs
 - scenario runner advanced stages: Redis Split-Brain / CP Partitioning (test lease expiry) and Kafka Broker Drops (test producer retries)
-
+- prefix hashring DB lease keys with "aegis:" and exclude the hashring DB lease keys from wipe_infra_state
 
 ORGANIZE
 ===
-- prefix hashring DB lease keys with "aegis:" and exclude them from wipe_infra_state
 - refactor sink service to use two in-process Kafka consumer instances with separate group IDs (e.g., `aegis-sink-file` and `aegis-sink-email`) instead of a composite program loop over sink adapters. Weakness of current program loop: a failure or timeout in an external dependency (like SMTP email) prevents clean offset commitment, causing duplicate file sink writes on retry and coupling independent destinations into a single failure domain.
 - CRITICAL: monotonic clock and safety with telemetry timestamp(used by priority queue) provided by agents
 
@@ -30,7 +29,10 @@ ORGANIZE
 
 CLASSIFY
 ===
+- IMPORTANT: consistent hash type?
+- FSM versioning. Also acts as a more rigid approach to detecting stale events.
 - tombstone feature in composer and sink to avoid those services processing staleevents and sending obsolete notification. But without concepts(e.g. FSM) from CP bleeding into those services i.e. they should know little and avoid being too stateful.
+- implement Phi (φ) Accrual Failure Detector in CP tracker for a more robust, dynamically scaling jitter/tolerance heartbeat calculation instead of a hardcoded expiry window.
 
 - [ ] infra: Adjust `/infra` and other workflow code (e.g. Helm values, python scripts) for `AEGIS_TOPIC_POSTMORTEM_GENERATED`, `AEGIS_TOPIC_DELIVERY_STATUS`, and `AEGIS_TOPIC_DELIVERY_DLQ` environment variables.
 

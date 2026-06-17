@@ -46,7 +46,7 @@ func TestResourceExhausted(t *testing.T) {
 	store := testutil.NewMockStore()
 	manager := incident.NewManager(store, &testutil.MockPublisher{}, okDiagnostics{}, "cp-a", time.Minute)
 	cp := New("cp-a", "a:50051", staticRing{member: hashring.Member{ID: "cp-a", Address: "a:50051"}}, manager, 1, time.Second)
-	sample := state.TelemetrySample{WorkerID: "worker-a", Timestamp: time.Now(), ModelServerHealthy: true}
+	sample := state.TelemetrySample{WorkerID: "worker-a", Timestamp: time.Now(), ReceivedAt: time.Now(), ModelServerHealthy: true}
 	if _, err := cp.Ingest(context.Background(), sample); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestQueueDepth(t *testing.T) {
 		t.Fatalf("expected queue depth 0, got %d", cp.QueueDepth())
 	}
 
-	sample := state.TelemetrySample{WorkerID: "worker-a", Timestamp: time.Now(), ModelServerHealthy: true}
+	sample := state.TelemetrySample{WorkerID: "worker-a", Timestamp: time.Now(), ReceivedAt: time.Now(), ModelServerHealthy: true}
 	cp.Ingest(context.Background(), sample)
 
 	if cp.QueueDepth() != 1 {
@@ -99,7 +99,7 @@ func TestProcessOneDrainsQueue(t *testing.T) {
 	manager := incident.NewManager(store, &testutil.MockPublisher{}, okDiagnostics{}, "cp-a", time.Minute)
 	cp := New("cp-a", "a:50051", staticRing{member: hashring.Member{ID: "cp-a", Address: "a:50051"}}, manager, 64, time.Second)
 
-	sample := state.TelemetrySample{WorkerID: "worker-a", Timestamp: time.Now(), ModelServerHealthy: true}
+	sample := state.TelemetrySample{WorkerID: "worker-a", Timestamp: time.Now(), ReceivedAt: time.Now(), ModelServerHealthy: true}
 	cp.Ingest(context.Background(), sample)
 
 	processed, err := cp.ProcessOne(context.Background())
@@ -237,8 +237,8 @@ func TestAddAndEvaluateClearsWindow(t *testing.T) {
 	
 	// Add 3 high temp samples to trigger overheat detection (SustainedSampleCount is 3 by default).
 	for i := 0; i < 3; i++ {
-		sample := state.TelemetrySample{WorkerID: workerID, Timestamp: time.Now(), TemperatureCelsius: 90, ModelServerHealthy: true}
-		_, detected := cp.addAndEvaluate(sample)
+		sample := state.TelemetrySample{WorkerID: workerID, Timestamp: time.Now(), ReceivedAt: time.Now(), TemperatureCelsius: 90, ModelServerHealthy: true}
+		_, detected, _ := cp.addAndEvaluate(sample)
 		if i < 2 && detected {
 			t.Fatalf("unexpected detection at sample %d", i)
 		}
@@ -250,8 +250,8 @@ func TestAddAndEvaluateClearsWindow(t *testing.T) {
 	// Because sample 2 triggered detection, the sliding window must be explicitly cleared.
 	// If it is cleared correctly, the next high temp sample will be treated as the FIRST sample of a new window,
 	// and will therefore NOT trigger an immediate detection.
-	sample := state.TelemetrySample{WorkerID: workerID, Timestamp: time.Now(), TemperatureCelsius: 90, ModelServerHealthy: true}
-	_, detected := cp.addAndEvaluate(sample)
+	sample := state.TelemetrySample{WorkerID: workerID, Timestamp: time.Now(), ReceivedAt: time.Now(), TemperatureCelsius: 90, ModelServerHealthy: true}
+	_, detected, _ := cp.addAndEvaluate(sample)
 	if detected {
 		t.Fatal("window was not cleared: 4th sample triggered detection immediately instead of waiting for a new sustained period")
 	}

@@ -125,6 +125,9 @@ func (c *FSMConsumer) handlePostmortemGenerated(ctx context.Context, topic strin
 	}
 
 	existing, err := c.store.GetWorkerState(ctx, workerID, errorType)
+	// We only ignore late events if the state has been manually or fully resolved to HEALTHY or RESOLVED (e.g. by Aegis CLI).
+	// For any other state mismatch, we intentionally DO NOT skip, and that means if the next state if invalid
+	// the corruption marker could be triggered for absolute FSM trustworthiness.
 	if err == nil && existing != nil && (existing.CurrentState == string(state.WorkerResolved) || existing.CurrentState == string(state.WorkerHealthy)) {
 		slog.Debug("ignoring late postmortem event because FSM is already resolved or healthy", "component", "FSM_CONSUMER", "worker_id", workerID, "incident_id", incidentID, "state", existing.CurrentState)
 		return nil

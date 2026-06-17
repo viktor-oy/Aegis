@@ -794,13 +794,14 @@ func TestIntegration_Incident_FSMConsumerChecksStaleEvents_And_SkipsIfAlreadyHea
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		currState, err = getWorkerState(ctx, eClient, workerID, errType)
-		if err == nil && currState.CurrentState != string(state.WorkerPostmortemRequested) {
+		// Wait until the consumer completes both transitions (POSTMORTEM_GENERATED -> DELIVERY_IN_PROGRESS)
+		if err == nil && currState.CurrentState == string(state.WorkerDeliveryInProgress) {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// 5. Verify state DID change, proving the event payload was valid and only rejected earlier due to IsStale
+	// 5. Verify state DID change to DELIVERY_IN_PROGRESS, proving the event payload was valid and fully processed
 	currState, err = getWorkerState(ctx, eClient, workerID, errType)
 	if err != nil {
 		t.Fatalf("Failed to get state: %v", err)

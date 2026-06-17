@@ -32,6 +32,37 @@ func TestModelServerUnhealthyIsImmediate(t *testing.T) {
 	}
 }
 
+func TestIsFreshDropsStaleAndOutOfOrderTelemetry(t *testing.T) {
+	window := NewWindow(DefaultRules())
+	now := time.Now()
+
+	// 1. First sample is always fresh
+	s1 := sample(now, 65, true)
+	if !window.IsFresh(s1) {
+		t.Fatal("expected first sample to be fresh")
+	}
+	window.Add(s1)
+
+	// 2. Sample from the future (in order) is fresh
+	s2 := sample(now.Add(1*time.Second), 65, true)
+	if !window.IsFresh(s2) {
+		t.Fatal("expected newer sample to be fresh")
+	}
+	window.Add(s2)
+
+	// 3. Sample from the past (out of order/stale) is NOT fresh
+	s3 := sample(now.Add(500*time.Millisecond), 65, true)
+	if window.IsFresh(s3) {
+		t.Fatal("expected out of order sample to NOT be fresh")
+	}
+	
+	// 4. Sample with exact same timestamp is NOT fresh
+	s4 := sample(now.Add(1*time.Second), 65, true)
+	if window.IsFresh(s4) {
+		t.Fatal("expected sample with exact same timestamp to NOT be fresh")
+	}
+}
+
 func TestSustainedVRAMPressureDetection(t *testing.T) {
 	window := NewWindow(DefaultRules())
 	now := time.Date(2026, 2, 2, 12, 0, 0, 0, time.UTC)
