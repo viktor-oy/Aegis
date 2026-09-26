@@ -82,6 +82,9 @@ kafka:
 
 etcd:
   enabled: true
+  auth:
+    token:
+      enabled: false
   image:
     registry: docker.io
     repository: bitnamilegacy/etcd

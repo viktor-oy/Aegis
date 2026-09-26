@@ -6,11 +6,6 @@ FROM ollama/ollama:0.7.1
 ARG OLLAMA_MODEL=qwen2.5:0.5b
 ENV OLLAMA_MODEL=${OLLAMA_MODEL}
 
-# Bake the default model into the image so the first startup is fast.
-# The entrypoint will pull a different model if OLLAMA_MODEL is overridden at runtime.
-RUN nohup bash -c "ollama serve &" && \
-    sleep 5 && \
-    ollama pull ${OLLAMA_MODEL}
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

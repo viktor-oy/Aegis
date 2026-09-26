@@ -2,7 +2,7 @@
 
 ## Overview
 
-Aegis is a watchdog control plane for your GPU/AI infra. It sits completely out-of-band so it never bottlenecks your actual inference requests. Python agents sit on the GPU workers streaming heartbeats and telemetry to a Go control plane. The Go backend handles all the heavy lifting: sharding, deterministic failure detection, acquiring Redis locks, and publishing incident events to Kafka. Finally, a downstream Composer service spits out a neat postmortem and hands it to sink workers for delivery.
+Aegis is a watchdog control plane for your GPU/AI infra. It sits completely out-of-band so it never bottlenecks your actual inference requests. Python agents sit on the GPU workers streaming heartbeats and telemetry to a Go control plane. The Go backend handles all the heavy lifting: sharding, deterministic failure detection, acquiring Etcd locks, and publishing incident events to Kafka. Finally, a downstream Composer service spits out a neat postmortem and hands it to sink workers for delivery.
 
 We treat inference servers (vLLM, KServe, Triton), file paths, and Email SMTP as external, black-box systems. Aegis integrates with them through narrow adapters. The golden rule: we never let a flaky AI endpoint dictate whether a worker is actually dead.
 
@@ -13,7 +13,7 @@ AI infra is messy. GPUs overheat, VRAM blows up, model servers crash, and networ
 ## Architecture Summary
 
 - Python Agents lock onto stable `worker_id`s (tracked by the Control Plane using their fully qualified Kubernetes identifiers, e.g., `namespace--podname`) and connect to the Control Plane (CP) via bootstrap URLs.
-- The Go CPs register themselves in Redis and build a shared, in-memory consistent hash ring.
+- The Go CPs register themselves in Etcd and build a shared, in-memory consistent hash ring.
 - If an agent hits the wrong CP, the CP simply returns a network redirect hint to the rightful owner.
 - Worker state follows a strict state machine: `HEALTHY -> SUSPECTED -> DIAGNOSTICS_TRIGGERED -> DIAGNOSTICS_COLLECTED -> POSTMORTEM_REQUESTED -> POSTMORTEM_GENERATED -> DELIVERY_IN_PROGRESS -> DELIVERED/DELIVERY_FAILED -> RESOLVED`.
 - Kafka acts as the durable spine, carrying all incident, diagnostic, postmortem, retry, and DLQ events wrapped in a common envelope.
@@ -25,15 +25,24 @@ AI infra is messy. GPUs overheat, VRAM blows up, model servers crash, and networ
 Aegis enforces a mathematically rigorous, deterministic Finite State Machine (FSM) to govern GPU/AI worker lifecycle state across distributed control plane replicas and asynchronous Kafka pipelines. 
 
 ### 1. Per-Error-Type State Tracking & Mutex Separation
-To prevent concurrent failure signals on a single GPU node from clobbering one another, authoritative FSM state is stored in Redis keyed by composite tuple `(worker_id, error_type)` under `aegis:cp:worker:state:<worker_id>:<error_type>`. This ensures that a transient non-fatal warning (e.g., `GPUOverheat`) operates independently from a concurrent hardware fault (`ECCBurst`).
+To prevent concurrent failure signals on a single GPU node from clobbering one another, authoritative FSM state is stored in Etcd keyed by composite tuple `(worker_id, error_type)` under `aegis:cp:state:worker:<worker_id>:<error_type>`. This ensures that a transient non-fatal warning (e.g., `GPUOverheat`) operates independently from a concurrent hardware fault (`ECCBurst`).
+
+#### Engineering Judgement: Etcd Key Namespaces & Infrastructure Wiping
+To enable blazing-fast, safe infrastructure resets during integration and chaos testing, Aegis strictly segregates its Etcd keys into two distinct namespaces:
+- **`aegis:cp:chashring:*`**: Reserved exclusively for ephemeral Control Plane membership leases and consistent hash ring state. These keys are heavily cached by test assertions and MUST NEVER be deleted during a test run to avoid triggering artificial ring-rebalance delays.
+- **`aegis:cp:state:*`**: The general umbrella prefix for all operational data. When a test finishes, `wipe_infra_state.py` performs a lightning-fast, surgical wipe by simply calling `etcdctl del "aegis:cp:state:" --prefix`. This instantly purges all incident data while keeping the Control Plane ring perfectly stable. Key formats under this namespace include:
+  - `aegis:cp:state:worker:<worker_id>:<error_type>`: Authoritative FSM state.
+  - `aegis:cp:state:fsm:lock:<worker_id>:<error_type>`: Distributed mutex locks.
+  - `aegis:cp:state:defer:<worker_id>:<error_type>:<event_type>`: Deferred out-of-order FSM events.
+  - `aegis:cp:state:dlq:corrupt:<worker_id>:<error_type>`: FSM corruption markers (dropped by the Watchdog).
 
 #### Engineering Judgement: Short-Lived Mutex vs. Authoritative FSM State
-Aegis decouples short-lived distributed mutex locks (`aegis:fsm:lock:<worker_id>:<error_type>`, default TTL 10m) from long-lived authoritative FSM state (`aegis:cp:worker:state:<worker_id>:<error_type>`). 
+Aegis decouples short-lived distributed mutex locks (`aegis:cp:state:fsm:lock:<worker_id>:<error_type>`, default TTL 10m) from long-lived authoritative FSM state (`aegis:cp:state:worker:<worker_id>:<error_type>`). 
 - **The Short-Lived Mutex Lock** prevents race conditions across the *entire* lifecycle, perfectly synchronizing concurrent Control Plane replicas during initial suspicion (`SUSPECTED`) as well as synchronizing the CP with the asynchronous `FSMConsumer`. If a CP node experiences a Stop-The-World GC pause mid-transition, the unified lock ensures that downstream Kafka consumers safely block until the authoritative state is securely persisted.
 - **The Authoritative FSM State** persists the end-to-end incident lifecycle (`HEALTHY -> ... -> RESOLVED`) across asynchronous downstream services (Composer and Sinks). If diagnostics collection or LLM postmortem composition exceeds 10 minutes, the distributed mutex lock expires safely while the authoritative FSM state prevents duplicate incident triggering for that failure mode.
 
-#### Engineering Judgement: FSM Handoff via Redis Between Control Planes
-Control Plane replicas are entirely stateless regarding FSM logic, relying exclusively on Redis for state handoff. If a CP node crashes or the consistent hash ring rebalances due to scaling, the newly assigned CP node for a given `worker_id` seamlessly inherits the exact FSM state, timeline, and correlation IDs from Redis. This prevents "dropped incidents" and "duplicate postmortems" during Kubernetes autoscaling or rolling updates. Furthermore, because Redis is the singular FSM authority, any state updates produced by asynchronous Kafka consumers (e.g., the downstream Composer emitting `POSTMORTEM_GENERATED`) are safely and deterministically applied to the FSM regardless of which CP replica happens to consume the Kafka event.
+#### Engineering Judgement: FSM Handoff via Etcd Between Control Planes
+Control Plane replicas are entirely stateless regarding FSM logic, relying exclusively on Etcd for state handoff. If a CP node crashes or the consistent hash ring rebalances due to scaling, the newly assigned CP node for a given `worker_id` seamlessly inherits the exact FSM state, timeline, and correlation IDs from Etcd. This prevents "dropped incidents" and "duplicate postmortems" during Kubernetes autoscaling or rolling updates. Furthermore, because Etcd is the singular FSM authority, any state updates produced by asynchronous Kafka consumers (e.g., the downstream Composer emitting `POSTMORTEM_GENERATED`) are safely and deterministically applied to the FSM regardless of which CP replica happens to consume the Kafka event.
 
 ### 2. State Transition Matrix
 Worker state progresses through a strict, formally verified sequence:
@@ -54,7 +63,7 @@ Worker state progresses through a strict, formally verified sequence:
 Control plane routing and state transitions are deterministic: **the Control Plane never panics on illegal FSM transitions or malformed state messages**. If an illegal state transition is attempted:
 1. The transition is rejected and logged with structured error context.
 2. The counter metric `aegis_fsm_illegal_transitions_total` is incremented.
-3. An immutable corrupt-FSM marker is written to Redis (`dlq:corrupt:<worker_id>:<error_type>`).
+3. An immutable corrupt-FSM marker is written to Etcd (`dlq:corrupt:<worker_id>:<error_type>`).
 4. The event is routed immediately to the dead-letter queue topic `aegis.cp.corrupt-fsm.dlq` for SRE inspection and alerting.
 
 > [!IMPORTANT]
@@ -65,15 +74,15 @@ Control plane routing and state transitions are deterministic: **the Control Pla
 In a highly distributed, asynchronous environment like Aegis, Kafka events can arrive out of order. A classic race condition exists between the `Composer` (which generates postmortems) and the `Sink` (which delivers them):
 If the Composer successfully publishes `aegis.postmortem.generated`, the Sink instantly triggers and may publish `aegis.postmortem.delivery.status` (DELIVERED) back to the Control Plane *before* the Control Plane has actually consumed the `POSTMORTEM_GENERATED` event.
 
-To prevent the FSM from throwing an illegal transition error (`POSTMORTEM_REQUESTED` -> `DELIVERED`), the Control Plane intercepts premature `DELIVERED` events. Instead of flagging the FSM as corrupt, it **defers** the event by temporarily buffering the raw Kafka payload into a Redis key (`aegis:defer:<worker_id>:<error_type>:<event_type>`).
+To prevent the FSM from throwing an illegal transition error (`POSTMORTEM_REQUESTED` -> `DELIVERED`), the Control Plane intercepts premature `DELIVERED` events. Instead of flagging the FSM as corrupt, it **defers** the event by temporarily buffering the raw Kafka payload into a Etcd key (`aegis:defer:<worker_id>:<error_type>:<event_type>`).
 
-Once the delayed `POSTMORTEM_GENERATED` event finally arrives, the Control Plane fast-forwards the FSM to `POSTMORTEM_GENERATED`, dynamically pulls the deferred `DELIVERED` event from Redis, and recursively applies it—cleanly completing the incident lifecycle without losing data or stalling the partition.
+Once the delayed `POSTMORTEM_GENERATED` event finally arrives, the Control Plane fast-forwards the FSM to `POSTMORTEM_GENERATED`, dynamically pulls the deferred `DELIVERED` event from Etcd, and recursively applies it—cleanly completing the incident lifecycle without losing data or stalling the partition.
 
 If the prerequisite event never arrives, the background Watchdog automatically scans expiring deferral keys and will force a DLQ corruption marker to highlight the missing upstream dependency.
 
 ## Cloud Deployment Notes
 
-Built for K8s. We use Helm and Kustomize to spin up the standalone Aegis services alongside Kafka, Redis, PostgreSQL, MinIO, a mock Slack webhook, and an OpenAI-compatible LLM endpoint (like vLLM). We lean on Kubernetes for the boring stuff (DNS, scheduling, secrets, autoscaling) so Aegis code can focus entirely on shard routing, failure detection, state transitions, and correlation propagation.
+Built for K8s. We use Helm and Kustomize to spin up the standalone Aegis services alongside Kafka, Etcd, PostgreSQL, MinIO, a mock Slack webhook, and an OpenAI-compatible LLM endpoint (like vLLM). We lean on Kubernetes for the boring stuff (DNS, scheduling, secrets, autoscaling) so Aegis code can focus entirely on shard routing, failure detection, state transitions, and correlation propagation.
 
 ## Local Validation
 
@@ -145,14 +154,14 @@ make tf-kill-all         # Forcefully kills ALL clusters
 > 
 > *Do NOT* attempt to "fix" this by lowering the Kafka heap limit (e.g. to `512m`). If you restrict Kafka's heap too aggressively, the JVM will churn CPU running Garbage Collection (GC). This CPU spike will cause the Kubernetes `pgrep -f kafka` liveness probes to time out, resulting in Kafka pods continuously crash-looping with `Exit Code 1` (Graceful Shutdown Timeout) due to CPU starvation, drastically slowing down integration tests. Leave the default `1024m` heap alone unless you are explicitly scaling up the container limits!
 
-Tilt applies the Helm/Kustomize artifacts. We use live update rules so your Python tweaks sync instantly without full image rebuilds, Go changes only recompile the affected binary, and stateful infra doesn't constantly reboot on app edits. `Tiltfile.infra` handles the heavy backing services (Kafka, Redis) and can be spun up independently for integration testing.
+Tilt applies the Helm/Kustomize artifacts. We use live update rules so your Python tweaks sync instantly without full image rebuilds, Go changes only recompile the affected binary, and stateful infra doesn't constantly reboot on app edits. `Tiltfile.infra` handles the heavy backing services (Kafka, Etcd) and can be spun up independently for integration testing.
 
 > [!NOTE]
 > **Tiltfile Context Overrides & Port Collision Avoidance**
 > Running multiple Kind clusters simultaneously (e.g. leaving a `dev` cluster running while executing `make test-intg` or `make scenario`) easily leads to localhost port collisions. To prevent this, the `AEGIS_ENV` variable actively switches internal port-forwarding maps between `local`, `intg-test`, and `scenario` modes. The specific port sets mapped to your host are:
-> - **local** (`make dev-up`): Kafka (30090-30092), Redis (36379), LLM (31434), Mailpit (30250)
-> - **intg-test** (`make test-intg`): Kafka (30094-30096), Redis (36380), LLM (31435), Mailpit (30251)
-> - **scenario** (`make scenario`): Kafka (30098-30100), Redis (36381), LLM (31436), Mailpit (30252)
+> - **local** (`make dev-up`): Kafka (30090-30092), Etcd (36379), LLM (31434), Mailpit (30250)
+> - **intg-test** (`make test-intg`): Kafka (30094-30096), Etcd (36380), LLM (31435), Mailpit (30251)
+> - **scenario** (`make scenario`): Kafka (30098-30100), Etcd (36381), LLM (31436), Mailpit (30252)
 > 
 > The `AEGIS_KUSTOMIZE_OVERLAY` env variable pairs with this to ensure the correct overlay is rendered (defaulting to `infra/kustomize/overlays/local`).
 
@@ -269,7 +278,7 @@ Instead of a rigid test, the Scenario Runner is a chaos script that injects stag
 ### Example: Successful FSM Validation
 1. **Trigger the scenario:**
    ```bash
-   make scenario FILE=scripts/scenario-runner/examples/successful-fsm.yaml
+   make scenario FILE=scripts/scenario-runner/examples/incident-handling.yaml
    ```
 2. **Observe the system react:**
    👉 [Click here to view the live filtered logs for this incident in Tilt](http://localhost:10354/r/(all)/overview?q=scenario-latency)
@@ -320,7 +329,7 @@ To keep testing consistent, output clean, and performance highly optimized acros
    > [!WARNING]
    > When `make test-intg` natively invokes `kind create cluster` behind the scenes, Kind's hardcoded default behavior is to automatically switch your active `kubectl` context to the newly created cluster. If you run tests in a background tab, be aware that your active terminal context might unexpectedly switch on you!
    
-   > **Hack / Gotcha (inotify limits):** We run ~15 microservices concurrently during testing, so Tilt tries to stream logs for all of them at once. This instantly blows past the default Linux `fs.inotify.max_user_instances` limit (128) on the Kind node, throwing annoying `failed to create fsnotify watcher: too many open files` errors. Instead of forcing everyone to manually bump sysctl limits on their Mac or Docker VM, the `ensure_test_infra.py` wrapper intercepts the cluster boot process and sneaks in a dynamic sysctl hack (`fs.inotify.max_user_instances=512`) directly inside the Kind node container before handing off to Tilt. It works flawlessly.
+   > **Hack / Gotcha (inotify limits):** We run ~15 microservices concurrently during testing, so Tilt tries to stream logs for all of them at once. This instantly blows past the default Linux `fs.inotify.max_user_instances` limit (128) on the Kind node, throwing annoying `failed to create fsnotify watcher: too many open files` errors. Instead of forcing everyone to manually bump sysctl limits on their Mac or Docker VM, the Terraform cluster boot process uses a `null_resource` to sneak in a dynamic sysctl hack (`fs.inotify.max_user_instances=512`) directly inside the Kind node container before handing off to Tilt. It works flawlessly.
 
 ### How-to: Running Specific Tests
 
@@ -340,7 +349,7 @@ To run tests individually while leveraging all our custom formatting and state c
 ## Wiping State
 
 - **Wipe all test state**: Run `make wipe-infra-state AEGIS_KUBE_CONTEXT="kind-aegis-intg-test"`
-- **Wipe infra state manually**: `AEGIS_KUBE_CONTEXT="kind-aegis" make wipe-infra-state TARGETS="redis,kafka:aegis.telemetry,aegis.events"` (You can specify exact Kafka topics as subtargets. The `AEGIS_KUBE_CONTEXT` environment variable governs which cluster is targeted; you MUST provide it explicitly. If wiping your dev cluster, pass `AEGIS_KUBE_CONTEXT="kind-aegis"`. If wiping tests, pass `AEGIS_KUBE_CONTEXT="kind-aegis-intg-test"`).
+- **Wipe infra state manually**: `AEGIS_KUBE_CONTEXT="kind-aegis" make wipe-infra-state TARGETS="etcd,kafka:aegis.telemetry,aegis.events"` (You can specify exact Kafka topics as subtargets. The `AEGIS_KUBE_CONTEXT` environment variable governs which cluster is targeted; you MUST provide it explicitly. If wiping your dev cluster, pass `AEGIS_KUBE_CONTEXT="kind-aegis"`. If wiping tests, pass `AEGIS_KUBE_CONTEXT="kind-aegis-intg-test"`).
 
 **Useful Flags:**
 - `VERBOSE=1` (e.g., `make test-intg VERBOSE=1`): Instructs the underlying test runners (`pytest`, `gotestsum`) to stream all debug output and inner service logs dynamically as they run, and also pipes the background Control Plane subprocess logs to your terminal for Go integration tests. By default (`VERBOSE=0`), integration tests run in a quiet mode and only print the results of the tests themselves to keep your terminal clean.
@@ -352,7 +361,7 @@ KEDA ScaledObjects look at CP queue depth and active agents for the Control Plan
 ## Helm, Kustomize, and Deployment Environments
 
 ## Watchdog Sharding
-Rather than introducing a distributed locking mechanism (like a Redis lock per FSM or a leader-election algorithm) for Watchdog duties, we reused the exact same Consistent Hash Ring used by the data plane routing. This ensures:
+Rather than introducing a distributed locking mechanism (like a Etcd lock per FSM or a leader-election algorithm) for Watchdog duties, we reused the exact same Consistent Hash Ring used by the data plane routing. This ensures:
 1. **Symmetry:** The same node that handles a worker's telemetry also handles its FSM cleanup.
 2. **Simplicity:** No new infrastructure, dependencies, or complex race-condition mitigation are required.
 3. **Resilience:** The Watchdog naturally self-heals and rebalances workloads alongside normal control-plane scaling and failover.
@@ -445,7 +454,7 @@ This compiles the binary into `bin/aegis` (if it doesn't already exist) and runs
 > 
 > *Anecdote 1*: If a worker is at `DELIVERY_FAILED` due to a flaky SMTP server, you might use the default `resolve` command to manually close the incident. However, if a background Sink Worker eventually succeeds on its final backoff retry and publishes a `DELIVERED` event to Kafka, the Control Plane will attempt an illegal transition from `RESOLVED` -> `DELIVERED`. 
 >
-> *Anecdote 2*: If a worker is stuck at `POSTMORTEM_REQUESTED` and you forcefully override it to `RESOLVED` using `--force`, the Redis state becomes `RESOLVED`. However, if the delayed AI Composer eventually finishes generating the postmortem and publishes it to Kafka, the Control Plane will attempt an illegal transition from `RESOLVED` -> `POSTMORTEM_GENERATED`.
+> *Anecdote 2*: If a worker is stuck at `POSTMORTEM_REQUESTED` and you forcefully override it to `RESOLVED` using `--force`, the Etcd state becomes `RESOLVED`. However, if the delayed AI Composer eventually finishes generating the postmortem and publishes it to Kafka, the Control Plane will attempt an illegal transition from `RESOLVED` -> `POSTMORTEM_GENERATED`.
 >
 > In both cases, the valid (but now stale) Kafka event is rejected, freezing the FSM and flagging it as corrupt in the DLQ.
 
@@ -475,10 +484,10 @@ make cli-dev ARGS="resolve <worker_id> <error_type> --force"
 ```
 
 #### Engineering Judgement: Why Publish Repair Audit Events?
-When `aegis-cli resolve` clears an FSM state or corrupt marker in Redis, it simultaneously publishes an audit event to `aegis.cp.corrupt-fsm.dlq` (`event_type: "aegis.cp.corrupt-fsm.repair"`). This ensures that automated SRE alerting dashboards and downstream audit consumers receive an immediate, verifiable record of operator intervention without polling Redis.
+When `aegis-cli resolve` clears an FSM state or corrupt marker in Etcd, it simultaneously publishes an audit event to `aegis.cp.corrupt-fsm.dlq` (`event_type: "aegis.cp.corrupt-fsm.repair"`). This ensures that automated SRE alerting dashboards and downstream audit consumers receive an immediate, verifiable record of operator intervention without polling Etcd.
 
 ### How-To: Configuring & Monitoring the Indefinite State Watchdog
-Aegis Control Plane runs an autonomous background Watchdog that continuously scans active FSM states in Redis for stuck incidents and corrupt DLQ markers.
+Aegis Control Plane runs an autonomous background Watchdog that continuously scans active FSM states in Etcd for stuck incidents and corrupt DLQ markers.
 
 ```sh
 # Configure watchdog scan interval (default: 300 seconds)
@@ -497,8 +506,8 @@ export AEGIS_FSM_DEFERRAL_TOLERANCE_SECONDS=120
 The primary purpose of the `aegis_fsm_stuck_incident` metric is to proactively surface hidden pipeline failures and split-brain scenarios. A stuck incident usually indicates that a downstream asynchronous dependency (like the AI Composer, SMTP Sink, or a Kafka broker) silently dropped an event or timed out, or that a network partition caused the control-plane to lose track of the incident. Alerting on this metric gives SREs the exact `worker_id` and `error_type` needed to manually investigate the downstream systems or use `aegis-cli resolve` to unblock the state.
 
 Crucially, **the Watchdog publishes this metric continuously to the Kafka DLQ topic** (`aegis.cp.corrupt-fsm.dlq`) on every scan interval as long as the incident remains stuck. This ensures constant visibility. SREs can inspect these continuous alerts using Kafka UI tools (like `topicctl`, Redpanda Console, or AKHQ) to filter and trace exactly which state transitions are failing.
-- **Corrupt Marker Alerting**: If any DLQ markers exist in Redis, the Watchdog emits `metric: "aegis_fsm_corrupt_marker_detected"`.
-- **No-Auto-Resolve Policy**: To prevent silent state suppression and ensure root-cause accountability, the Watchdog **emits warnings and alerts without auto-resolving or deleting** stuck or corrupt states in Redis.
+- **Corrupt Marker Alerting**: If any DLQ markers exist in Etcd, the Watchdog emits `metric: "aegis_fsm_corrupt_marker_detected"`.
+- **No-Auto-Resolve Policy**: To prevent silent state suppression and ensure root-cause accountability, the Watchdog **emits warnings and alerts without auto-resolving or deleting** stuck or corrupt states in Etcd.
 
 ## Disaster Simulation & Scenario Runner
 
@@ -560,7 +569,7 @@ chain:
   - action: kafka_produce_message
     topic: "<string>" # e.g. "aegis.postmortem.delivery.status"
     target_ref_id: "<string>" # Required. Targets from a previous stage_id where correlation_id was saved
-    inject_incident_id: <boolean> # Optional, dynamically fetches the incident_id from Redis and injects it into the payload
+    inject_incident_id: <boolean> # Optional, dynamically fetches the incident_id from Etcd and injects it into the payload
     wait_for_fsm_creation_timeout_ms: <int> # Optional, wait for the incident to be created when inject_incident_id is true
     error_type: "<string>" # Optional, required if inject_incident_id is true
     payload: # Optional, arbitrary JSON payload
@@ -597,12 +606,12 @@ When diagnosing tricky split-brain, sharding, or watchdog race conditions locall
 ## Technologies Used
 
 **Languages and protocols:** Go, Python 3.14.1, protobuf, gRPC, JSON event envelopes, Markdown.
-**Distributed systems:** consistent hashing with virtual nodes, Redis TTL membership leases, Redis incident locks, bounded queues, min-heap heartbeat expiry, deterministic incident IDs, idempotent Kafka consumers, retry and DLQ topics.
+**Distributed systems:** consistent hashing with virtual nodes, Etcd TTL membership leases, Etcd incident locks, bounded queues, min-heap heartbeat expiry, deterministic incident IDs, idempotent Kafka consumers, retry and DLQ topics.
 **Infrastructure:** Kubernetes, Helm, Kustomize, Kind, Minikube/k3d-compatible overlays, Tilt, KEDA, Terraform, mise.
-**Data and messaging:** Kafka, Redis, MinIO for local validation.
+**Data and messaging:** Kafka, Etcd, MinIO for local validation.
 **Observability:** trace correlation IDs.
 **AI integration:** OpenAI-compatible inference endpoint (vLLM or KServe).
-**Security and hardening:** Kubernetes Secrets, optional gRPC mTLS wiring, Kafka authentication and ACL notes, Redis authentication, NetworkPolicy, least-privilege ServiceAccounts, rate limiting, secret rotation notes, and Pod-level Security Contexts (`podSecurityContext`) globally enforced across all Helm workloads.
+**Security and hardening:** Kubernetes Secrets, optional gRPC mTLS wiring, Kafka authentication and ACL notes, Etcd authentication, NetworkPolicy, least-privilege ServiceAccounts, rate limiting, secret rotation notes, and Pod-level Security Contexts (`podSecurityContext`) globally enforced across all Helm workloads.
 
 *(Version pins are tightly tracked in `VERSION_LEDGER.md`)*
 

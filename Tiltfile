@@ -3,24 +3,13 @@ load('ext://restart_process', 'docker_build_with_restart')
 
 aegis_env_app = os.getenv('AEGIS_ENV', 'local')
 
-AEGIS_PORT_MAP = {
-    'local': {
-        'cp': ['50051:50051'],
-        'agent': ['8080:8080'],
-        'sink': ['8081:8081']
-    },
-    'intg-test': {
-        'cp': [],
-        'agent': [],
-        'sink': []
-    },
-    'scenario': {
-        'cp': [],
-        'agent': [],
-        'sink': []
-    }
+# Parse ports from the unified ports.json loaded in Tiltfile.infra
+raw_app_ports = port_map_data.get(aegis_env_app, port_map_data['local'])
+aegis_ports = {
+    'cp': [f"{raw_app_ports['cp']}:{raw_app_ports['cp']}"] if raw_app_ports.get('cp') else [],
+    'agent': [f"{raw_app_ports['agent']}:{raw_app_ports['agent']}"] if raw_app_ports.get('agent') else [],
+    'sink': [f"{raw_app_ports['sink']}:{raw_app_ports['sink']}"] if raw_app_ports.get('sink') else []
 }
-aegis_ports = AEGIS_PORT_MAP.get(aegis_env_app, AEGIS_PORT_MAP['local'])
 
 # Push images to the local registry instead of using `kind load`.
 # This bypasses the kind load / containerd config version incompatibility.

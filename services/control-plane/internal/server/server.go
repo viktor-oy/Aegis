@@ -147,8 +147,8 @@ func (cp *ControlPlane) ProcessOne(ctx context.Context) (bool, error) {
 	}
 }
 
-func (cp *ControlPlane) ExpireHeartbeats(ctx context.Context, now time.Time) error {
-	for _, expired := range cp.tracker.Expired(now) {
+func (cp *ControlPlane) ExpireHeartbeats(ctx context.Context, monotonicNow time.Time) error {
+	for _, expired := range cp.tracker.Expired(monotonicNow) {
 		owner, ok := cp.ring.Owner(expired.WorkerID)
 		if ok && owner.ID != cp.id {
 			continue

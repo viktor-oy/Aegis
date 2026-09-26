@@ -70,7 +70,7 @@ func TestMain(m *testing.M) {
 }
 
 func getWorkerState(ctx context.Context, eClient *clientv3.Client, workerID, errorType string) (*membership.WorkerState, error) {
-	key := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errorType)
 	resp, err := eClient.Get(ctx, key)
 	if err != nil {
 		return nil, err
@@ -283,7 +283,7 @@ func TestIntegration_Incident_StuckFSM_WatchdogAlert(t *testing.T) {
 
 	// Fake an old state in etcd to trigger stuck metric
 	oldTime := time.Now().UTC().Add(-20 * time.Minute)
-	_, err := eClient.Put(ctx, fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType),
+	_, err := eClient.Put(ctx, fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errType),
 		fmt.Sprintf(`{"worker_id":"%s","error_type":"%s","current_state":"%s","incident_id":"%s","correlation_id":"%s","updated_at":"%s"}`,
 			workerID, errType, state.WorkerDiagnosticsTriggered, incidentID, "corr-"+fmt.Sprint(time.Now().UnixNano()), oldTime.Format(time.RFC3339Nano)),
 	)
@@ -331,7 +331,7 @@ func TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding(t *testing.T
 	time.Sleep(2 * time.Second)
 
 	incidentID := "inc_poison_pill_" + fmt.Sprint(time.Now().UnixNano())
-	_, err := eClient.Put(ctx, fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType),
+	_, err := eClient.Put(ctx, fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errType),
 		fmt.Sprintf(`{"worker_id":"%s","error_type":"%s","current_state":"%s","incident_id":"%s","correlation_id":"%s","updated_at":"%s"}`,
 			workerID, errType, state.WorkerSuspected, incidentID, "corr-"+fmt.Sprint(time.Now().UnixNano()), time.Now().UTC().Format(time.RFC3339Nano)),
 	)
@@ -375,7 +375,7 @@ func TestIntegration_Incident_CorruptFSM_WatchdogAlert_And_Sharding(t *testing.T
 		t.Fatalf("Watchdog sharding failure: expected watchdog from %s to process worker %s, but got processed by %s", expectedProducer, workerID, actualProducer)
 	}
 
-	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	markerKey := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errType)
 	getResp, err := eClient.Get(ctx, markerKey)
 	if err == nil && len(getResp.Kvs) == 0 {
 		err = fmt.Errorf("not found")
@@ -489,7 +489,7 @@ func TestIntegration_Incident_CorruptFSM_RejectsValidTransitions(t *testing.T) {
 	errType := string(state.FailureLatencySpike)
 
 	// 1. Manually insert Corrupt DLQ marker and current state in etcd
-	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	markerKey := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errType)
 	eClient.Put(ctx, markerKey, string("illegal transition manually injected"))
 
 	ws := membership.WorkerState{
@@ -500,7 +500,7 @@ func TestIntegration_Incident_CorruptFSM_RejectsValidTransitions(t *testing.T) {
 		CorrelationID: "corr-" + fmt.Sprint(time.Now().UnixNano()),
 	}
 	wsData, _ := json.Marshal(ws)
-	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	stateKey := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errType)
 	eClient.Put(ctx, stateKey, string(wsData))
 
 	// 2. Publish a perfectly valid event to advance the FSM (PostmortemRequested -> PostmortemGenerated)
@@ -555,7 +555,7 @@ func TestIntegration_Incident_FSMOutOfOrderDeferral(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 	}
 	wsData, _ := json.Marshal(ws)
-	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	stateKey := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errType)
 	eClient.Put(ctx, stateKey, string(wsData))
 
 	testutils.LogInfo(t, "📖 Publishing early DELIVERED event...")
@@ -569,7 +569,7 @@ func TestIntegration_Incident_FSMOutOfOrderDeferral(t *testing.T) {
 	publishRawMessage(t, incident.TopicDeliveryStatus, payload)
 
 	// Verify deferred event exists in etcd with retry (asynchronous Kafka processing)
-	deferKey := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
+	deferKey := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
 	deferredFound := false
 	var lastErr error
 	for i := 0; i < 50; i++ { // wait up to 10s
@@ -595,7 +595,7 @@ func TestIntegration_Incident_FSMOutOfOrderDeferral(t *testing.T) {
 	}
 
 	// Verify DLQ marker does not exist
-	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	markerKey := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errType)
 	if getResp, _ := eClient.Get(ctx, markerKey); len(getResp.Kvs) > 0 {
 		t.Fatalf("Expected no DLQ marker, but FSM was corrupted by early DELIVERED event")
 	}
@@ -665,7 +665,7 @@ func TestIntegration_Incident_FSMDeferredEventTimeout(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 	}
 	wsData, _ := json.Marshal(ws)
-	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	stateKey := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errType)
 	eClient.Put(ctx, stateKey, string(wsData))
 
 	// Give the watchdog time to sync
@@ -674,7 +674,7 @@ func TestIntegration_Incident_FSMDeferredEventTimeout(t *testing.T) {
 	// 2. Insert a deferred event that is expiring
 	// The watchdog scans for TTL < 2 minutes (120s)
 	simulatedTTL := 2 * time.Second
-	deferKey := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
+	deferKey := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
 	func() {
 		leaseResp, _ := eClient.Grant(ctx, int64(simulatedTTL.Seconds()))
 		eClient.Put(ctx, deferKey, string("{}"), clientv3.WithLease(leaseResp.ID))
@@ -695,7 +695,7 @@ func TestIntegration_Incident_FSMDeferredEventTimeout(t *testing.T) {
 	}
 
 	// 3. Verify DLQ marker exists
-	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	markerKey := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errType)
 	getResp, err := eClient.Get(ctx, markerKey)
 	if err == nil && len(getResp.Kvs) == 0 {
 		err = fmt.Errorf("not found")
@@ -733,7 +733,7 @@ func TestIntegration_Incident_FSMConsumerChecksStaleEvents_And_SkipsIfAlreadyHea
 		UpdatedAt:     time.Now().UTC(),
 	}
 	wsData, _ := json.Marshal(ws)
-	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	stateKey := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errType)
 	eClient.Put(ctx, stateKey, string(wsData))
 	time.Sleep(2 * time.Second)
 
@@ -840,7 +840,7 @@ func TestIntegration_Incident_FSMConsumerChecksStaleEvents_And_SkipsIfAlreadyHea
 	}
 
 	// Check if a DLQ marker was created (corruption)
-	dlqResp, err := eClient.Get(ctx, fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType))
+	dlqResp, err := eClient.Get(ctx, fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errType))
 	dlqMarker := ""
 	if err == nil && len(dlqResp.Kvs) > 0 {
 		dlqMarker = string(dlqResp.Kvs[0].Value)
@@ -878,13 +878,13 @@ func TestIntegration_Incident_WatchdogChecksStaleDeferral(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 	}
 	wsData, _ := json.Marshal(ws)
-	stateKey := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errType)
+	stateKey := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errType)
 	eClient.Put(ctx, stateKey, string(wsData))
 	time.Sleep(2 * time.Second)
 
 	// 2. Insert a deferred event that is expiring, but for the OLD incident ID
 	simulatedTTL := 2 * time.Second
-	deferKey := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
+	deferKey := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errType, incident.TopicDeliveryStatus)
 
 	// Payload for old incident
 	defPayload := map[string]any{
@@ -934,7 +934,7 @@ func TestIntegration_Incident_WatchdogChecksStaleDeferral(t *testing.T) {
 	time.Sleep(simulatedTTL + (5 * time.Second))
 
 	// 5. Verify state was marked as corrupt (DLQ marker created), proving the watchdog logic works and only rejected earlier due to IsStale
-	markerKey := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errType)
+	markerKey := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errType)
 	getResp, err = eClient.Get(ctx, markerKey)
 	if err == nil && len(getResp.Kvs) == 0 {
 		err = fmt.Errorf("not found")

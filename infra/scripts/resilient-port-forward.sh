@@ -38,7 +38,14 @@ while true; do
   
   # Run until the refresh interval then forcefully restart to beat the idle timeout.
   # We use a loop of 1-second sleeps so the trap can interrupt it immediately if Tilt exits.
+  # We also monitor the kubectl process and break early if it dies prematurely (e.g., Pod Pending).
   for ((i=1; i<=REFRESH_INTERVAL_SECONDS; i++)); do
+    if ! kill -0 "$PID" 2>/dev/null; then
+      # Process died prematurely! Break early to restart it.
+      echo "[resilient-port-forward] kubectl died prematurely. Restarting..."
+      sleep 3 # Add a short delay to avoid spamming the API server in a tight crash loop
+      break
+    fi
     sleep 1
   done
   

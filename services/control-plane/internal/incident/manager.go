@@ -248,30 +248,3 @@ func (m *Manager) publish(ctx context.Context, topic string, eventType string, i
 	return m.publisher.Publish(ctx, topic, env)
 }
 
-// MarkFSMCorrupt is a DRY helper used by the FSM consumer and Watchdog to mark a worker's FSM as corrupt,
-// freeze it in etcd, and emit an alert to the DLQ topic.
-func MarkFSMCorrupt(ctx context.Context, store Store, publisher kafka.Publisher, producer string, inc state.Incident, toState state.WorkerHealthState, errMsg string, extraPayload map[string]any) error {
-	if err := store.SetDLQMarker(ctx, inc.WorkerID, string(inc.FailureType), errMsg); err != nil {
-		return fmt.Errorf("failed to set DLQ marker: %w", err)
-	}
-
-	// Purge any deferred events for this worker/error type to prevent them from leaking into future resolved states
-	_ = store.DeleteDeferredEvent(ctx, inc.WorkerID, string(inc.FailureType), TopicDeliveryStatus)
-
-	if publisher != nil {
-		payload := map[string]any{
-			"from_state": string(inc.State),
-			"to_state":   string(toState),
-			"error":      errMsg,
-			"metric":     "aegis_fsm_illegal_transitions_total",
-		}
-		for k, v := range extraPayload {
-			payload[k] = v
-		}
-		env := kafka.NewEnvelope("aegis.cp.fsm_illegal_transition", inc, producer, fmt.Sprintf("%s:%s", inc.WorkerID, inc.FailureType), payload, time.Now().UTC())
-		if err := publisher.Publish(ctx, TopicCorruptFSMDLQ, env); err != nil {
-			return fmt.Errorf("failed to publish to DLQ topic: %w", err)
-		}
-	}
-	return nil
-}

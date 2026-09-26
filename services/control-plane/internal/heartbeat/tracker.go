@@ -37,14 +37,14 @@ func NewTracker(timeout time.Duration) *Tracker {
 	}
 }
 
-func (t *Tracker) Observe(workerID string, now time.Time) WorkerState {
+func (t *Tracker) Observe(workerID string, monotonicNow time.Time) WorkerState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	current := t.workers[workerID]
 	current.WorkerID = workerID
-	current.LastHeartbeatAt = now
-	current.DeadlineAt = now.Add(t.timeout)
+	current.LastHeartbeatAt = monotonicNow
+	current.DeadlineAt = monotonicNow.Add(t.timeout)
 	current.State = state.WorkerHealthy
 	current.Generation++
 	t.workers[workerID] = current
@@ -71,14 +71,14 @@ func (t *Tracker) NextDeadline() (HeartbeatDeadline, bool) {
 	return HeartbeatDeadline{}, false
 }
 
-func (t *Tracker) Expired(now time.Time) []WorkerState {
+func (t *Tracker) Expired(monotonicNow time.Time) []WorkerState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	var expired []WorkerState
 	for t.queue.Len() > 0 {
 		item := t.queue[0]
-		if now.Before(item.DeadlineAt) {
+		if monotonicNow.Before(item.DeadlineAt) {
 			break
 		}
 		heap.Pop(&t.queue)
@@ -86,7 +86,7 @@ func (t *Tracker) Expired(now time.Time) []WorkerState {
 		if !ok || current.Generation != item.Generation {
 			continue
 		}
-		if now.Before(current.DeadlineAt) {
+		if monotonicNow.Before(current.DeadlineAt) {
 			continue
 		}
 		current.State = state.WorkerSuspected

@@ -138,23 +138,26 @@ func consumeKafka(ctx context.Context, reader *kafka.Reader, worker *delivery.Wo
 	slog.Info("Started consuming from Kafka", "component", "KAFKA", "event", "CONSUME_START", "topic", delivery.TopicGenerated)
 
 	for {
-		m, err := reader.ReadMessage(ctx)
+		m, err := reader.FetchMessage(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
 			}
 			slog.Error("Error reading message from kafka", "component", "KAFKA", "event", "READ_ERR", "error", err)
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
 		var envelope types.Envelope
 		if err := json.Unmarshal(m.Value, &envelope); err != nil {
 			slog.Error("Failed to unmarshal kafka message envelope", "component", "KAFKA", "event", "UNMARSHAL_ERR", "error", err, "message", string(m.Value))
+			_ = reader.CommitMessages(ctx, m)
 			continue
 		}
 
 		if envelope.EventType != "aegis.postmortem.generated" {
 			slog.Warn("Ignored unexpected event type", "component", "KAFKA", "event", "UNEXPECTED_EVENT", "event_type", envelope.EventType)
+			_ = reader.CommitMessages(ctx, m)
 			continue
 		}
 
@@ -170,13 +173,20 @@ func consumeKafka(ctx context.Context, reader *kafka.Reader, worker *delivery.Wo
 			pm.CorrelationID = envelope.CorrelationID
 		}
 
-		results, err := worker.Deliver(ctx, pm)
-		if err != nil {
-			slog.Error("Error during delivery", "component", "SINK_DELIVERY", "event", "DELIVERY_ERR", "incident_id", pm.IncidentID, "error", err)
-			continue
+		for {
+			results, err := worker.Deliver(ctx, pm)
+			if err != nil {
+				slog.Error("Error during delivery. Retrying in 5s...", "component", "SINK_DELIVERY", "event", "DELIVERY_ERR", "incident_id", pm.IncidentID, "error", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			slog.Info("Processed generated postmortem", "component", "SINK_DELIVERY", "event", "DELIVERY_SUCCESS", "incident_id", pm.IncidentID, "results", results)
+			break
 		}
-
-		slog.Info("Processed generated postmortem", "component", "SINK_DELIVERY", "event", "DELIVERY_SUCCESS", "incident_id", pm.IncidentID, "results", results)
+		
+		if err := reader.CommitMessages(ctx, m); err != nil {
+			slog.Error("Failed to commit kafka offset", "component", "KAFKA", "event", "COMMIT_ERR", "error", err)
+		}
 	}
 }
 

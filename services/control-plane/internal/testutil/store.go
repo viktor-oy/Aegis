@@ -149,7 +149,7 @@ func (s *MockStore) ListActiveWorkerStates(_ context.Context) ([]membership.Work
 func (s *MockStore) SetDLQMarker(_ context.Context, workerID string, errorType string, markerData string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errorType)
 	s.dlqMarkers[key] = markerData
 	return nil
 }
@@ -157,7 +157,7 @@ func (s *MockStore) SetDLQMarker(_ context.Context, workerID string, errorType s
 func (s *MockStore) GetDLQMarker(_ context.Context, workerID string, errorType string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errorType)
 	marker, ok := s.dlqMarkers[key]
 	if !ok {
 		return "", nil
@@ -168,7 +168,7 @@ func (s *MockStore) GetDLQMarker(_ context.Context, workerID string, errorType s
 func (s *MockStore) DeleteDLQMarker(_ context.Context, workerID string, errorType string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errorType)
 	delete(s.dlqMarkers, key)
 	return nil
 }
@@ -186,7 +186,7 @@ func (s *MockStore) ListDLQMarkers(_ context.Context) ([]string, error) {
 func (s *MockStore) DeferEvent(_ context.Context, workerID string, errorType string, eventType string, payload []byte, ttl time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	key := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errorType, eventType)
 	s.deferredEvents[key] = deferredEvent{
 		payload:   payload,
 		expiresAt: time.Now().Add(ttl),
@@ -197,7 +197,7 @@ func (s *MockStore) DeferEvent(_ context.Context, workerID string, errorType str
 func (s *MockStore) GetDeferredEvent(_ context.Context, workerID string, errorType string, eventType string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	key := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errorType, eventType)
 	event, ok := s.deferredEvents[key]
 	if !ok || time.Now().After(event.expiresAt) {
 		return nil, nil
@@ -208,7 +208,7 @@ func (s *MockStore) GetDeferredEvent(_ context.Context, workerID string, errorTy
 func (s *MockStore) DeleteDeferredEvent(_ context.Context, workerID string, errorType string, eventType string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	key := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errorType, eventType)
 	delete(s.deferredEvents, key)
 	return nil
 }
@@ -227,7 +227,7 @@ func (s *MockStore) ScanExpiringDeferredEvents(_ context.Context, tolerance time
 	for key, event := range s.deferredEvents {
 		ttl := event.expiresAt.Sub(now)
 		if ttl >= 0 && ttl < tolerance {
-			// Extract workerID and errorType from "aegis:defer:<workerID>:<errorType>:<eventType>"
+			// Extract workerID and errorType from "aegis:cp:state:defer:<workerID>:<errorType>:<eventType>"
 			// I'll parse it simply assuming the mock is only used for tests that create proper keys.
 			var prefix, workerID, errorType, eventType string
 			fmt.Sscanf(key, "%s:%s:%s:%s:%s", &prefix, &prefix, &workerID, &errorType, &eventType)

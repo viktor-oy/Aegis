@@ -89,7 +89,7 @@ func TestDLQMarkerLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDLQMarkers failed: %v", err)
 	}
-	if len(markers) != 1 || markers[0] != "aegis:cp:dlq:corrupt:worker-99:ECCBurst" {
+	if len(markers) != 1 || markers[0] != "aegis:cp:state:dlq:corrupt:worker-99:ECCBurst" {
 		t.Fatalf("unexpected DLQ markers list: %v", markers)
 	}
 

@@ -151,6 +151,25 @@ etcd:
     allowPrivilegeEscalation: false
     capabilities:
       drop: ["ALL"]
+  resourcesPreset: "none"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 5
+  extraEnvVars:
+    - name: ETCD_HEARTBEAT_INTERVAL
+      value: "500"
+    - name: ETCD_ELECTION_TIMEOUT
+      value: "5000"
 
 
 

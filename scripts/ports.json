@@ -6,7 +6,10 @@
         "etcd": 36379,
         "llm": 31434,
         "mailpit_smtp": 30250,
-        "mailpit_http": 38025
+        "mailpit_http": 38025,
+        "cp": 50051,
+        "agent": 8080,
+        "sink": 8081
     },
     "intg-test": {
         "tilt": 10352,
@@ -15,7 +18,10 @@
         "etcd": 36380,
         "llm": 31435,
         "mailpit_smtp": 30251,
-        "mailpit_http": 38026
+        "mailpit_http": 38026,
+        "cp": null,
+        "agent": null,
+        "sink": null
     },
     "scenario": {
         "tilt": 10354,
@@ -24,6 +30,9 @@
         "etcd": 36381,
         "llm": 31436,
         "mailpit_smtp": 30252,
-        "mailpit_http": 38027
+        "mailpit_http": 38027,
+        "cp": null,
+        "agent": null,
+        "sink": null
     }
 }

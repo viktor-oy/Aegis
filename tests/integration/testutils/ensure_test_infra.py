@@ -36,8 +36,8 @@ def main():
             # Nuke the entire K8s cluster to ensure a clean slate. Sometimes race conditions
             # cause Tilt API calls in wait_for_infra to hang until timeout because a particular 
             # Tilt resource is not responding due to the underlying k8s resource state being corrupted.
-            print("\033[31mNuking the K8s cluster to clear potentially corrupted state...\033[0m", flush=True)
-            subprocess.run(["make", "test-tf-kill"], check=False)
+            print("\033[31mNuking the K8s aegis-system namespace to clear potentially corrupted state...\033[0m", flush=True)
+            subprocess.run(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-intg-test", "delete", "namespace", "aegis-system", "--force", "--grace-period=0"], check=False)
             raise
 
     subprocess.run(["make", "clear-tilt-ports"], env=env, check=True)
@@ -109,8 +109,8 @@ def main():
         # Nuke the entire K8s cluster to ensure a clean slate. Sometimes race conditions
         # cause Tilt API calls in wait_for_infra to hang until timeout because a particular 
         # Tilt resource is not responding due to the underlying k8s resource state being corrupted.
-        print("\033[31mNuking the K8s cluster to clear potentially corrupted state...\033[0m", flush=True)
-        subprocess.run(["make", "test-tf-kill"], check=False)
+        print("\033[31mNuking the K8s aegis-system namespace to clear potentially corrupted state...\033[0m", flush=True)
+        subprocess.run(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-intg-test", "delete", "namespace", "aegis-system", "--force", "--grace-period=0"], check=False)
         raise
 
 if __name__ == "__main__":

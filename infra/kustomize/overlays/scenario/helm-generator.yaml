@@ -13,4 +13,6 @@ valuesInline:
       controller:
         service:
           nodePorts: [30098, 30099, 30100]
+  etcd:
+    replicaCount: 3
 includeCRDs: true

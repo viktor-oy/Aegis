@@ -59,21 +59,21 @@ class KafkaComposerApp:
                 event = json.loads(message.value.decode("utf-8"))
                 incident_id = event.get("incident_id")
                 logger.info(f"Received diagnostic event for incident {incident_id}", extra={"component": "KAFKA", "event": "RECEIVE_EVENT", "incident_id": incident_id})
-                try:
-                    generated = await self.service.compose(event)
-                    output = generated.to_event(source_event=event, event_id=str(uuid4()))
-                    await producer.send_and_wait(
-                        self.kafka_config.output_topic,
-                        json.dumps(output, sort_keys=True).encode("utf-8"),
-                        key=generated.incident_id.encode("utf-8"),
-                    )
-                    logger.info(f"Successfully generated and published postmortem for {incident_id}", extra={"component": "KAFKA", "event": "PUBLISH_SUCCESS", "incident_id": incident_id})
-                    await consumer.commit()
-                except Exception as e:
-                    logger.error(f"Failed to process event for incident {incident_id}: {e}", exc_info=True, extra={"component": "KAFKA", "event": "PROCESS_ERR", "incident_id": incident_id, "error": str(e)})
-                    # TODO: Implement DLQ for failed events.
-                    # By skipping commit, the offset is not advanced until the next successful message.
-                    continue
+                while True:
+                    try:
+                        generated = await self.service.compose(event)
+                        output = generated.to_event(source_event=event, event_id=str(uuid4()))
+                        await producer.send_and_wait(
+                            self.kafka_config.output_topic,
+                            json.dumps(output, sort_keys=True).encode("utf-8"),
+                            key=generated.incident_id.encode("utf-8"),
+                        )
+                        logger.info(f"Successfully generated and published postmortem for {incident_id}", extra={"component": "KAFKA", "event": "PUBLISH_SUCCESS", "incident_id": incident_id})
+                        await consumer.commit()
+                        break
+                    except Exception as e:
+                        logger.error(f"Failed to process event for incident {incident_id}: {e}. Retrying in 5 seconds...", exc_info=True, extra={"component": "KAFKA", "event": "PROCESS_ERR", "incident_id": incident_id, "error": str(e)})
+                        await asyncio.sleep(5)
         finally:
             await consumer.stop()
             await producer.stop()

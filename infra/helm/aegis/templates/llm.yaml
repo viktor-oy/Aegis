@@ -41,6 +41,14 @@ spec:
           securityContext:
             {{- toYaml .Values.llm.securityContext | nindent 12 }}
           {{- end }}
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+      volumes:
+        - name: ollama-data
+          hostPath:
+            path: /root/.ollama
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

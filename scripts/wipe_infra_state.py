@@ -17,10 +17,12 @@ if not AEGIS_KUBE_CONTEXT:
     )
 
 def wipe_etcd():
+    # does not wipe hashring leases
+
     log_info("🧹 Wiping etcd State...")
     try:
         subprocess.run(
-            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "del", "aegis:", "--prefix"],
+            ["kubectl", "--context", AEGIS_KUBE_CONTEXT, "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "del", "aegis:cp:state:", "--prefix"],
             stdout=subprocess.DEVNULL,
             check=True
         )

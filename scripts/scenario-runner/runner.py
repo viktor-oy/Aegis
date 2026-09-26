@@ -144,8 +144,9 @@ def apply_scenario_infra(node_count: int, cp_count: int, sink_count: int, compos
     logger.info(f"Provisioning scenario infrastructure via Terraform (Nodes={node_count})...")
     run_cmd(["make", "scenario-tf-up", f"NODE_COUNT={node_count}"], check=True, capture_output=False)
     
-    with open(last_node_count_file, "w") as f:
-        f.write(str(node_count))
+    if last_node_count != node_count:
+        with open(last_node_count_file, "w") as f:
+            f.write(str(node_count))
 
     logger.info(f"Applying dynamic workloads via Tilt (CP={cp_count}, Sink={sink_count}, Composer={composer_count})...")
     
@@ -200,8 +201,16 @@ spec:
 {indented_patch}
 """
 
-    with open(os.path.join(overlay_dir, "kustomization.yaml"), "w") as f:
-        f.write(kustomization_yaml)
+    kust_file = os.path.join(overlay_dir, "kustomization.yaml")
+    write_kust = True
+    if os.path.exists(kust_file):
+        with open(kust_file, "r") as f:
+            if f.read() == kustomization_yaml:
+                write_kust = False
+                
+    if write_kust:
+        with open(kust_file, "w") as f:
+            f.write(kustomization_yaml)
 
     if not tilt_is_healthy:
         logger.info("Starting Tilt daemon in the background...")
@@ -256,7 +265,7 @@ spec:
         logger.info("All workloads are fully synchronized and healthy.")
             
         logger.info("Flushing Etcd to ensure a clean slate for the scenario (removing old incidents/deferrals)...")
-        run_cmd(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "del", '""', "--prefix"], check=True, capture_output=False)
+        run_cmd(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "del", "aegis:cp:state:", "--prefix"], check=True, capture_output=False)
             
     except Exception as e:
         logger.error(f"Error during infrastructure setup: {e}")
@@ -268,14 +277,19 @@ spec:
         # Nuke the entire K8s cluster to ensure a clean slate. Sometimes race conditions
         # cause Tilt API calls in wait_for_infra to hang until timeout because a particular 
         # Tilt resource is not responding due to the underlying k8s resource state being corrupted.
-        logger.error("Nuking the K8s cluster to clear potentially corrupted state...")
-        run_cmd(["make", "scenario-tf-kill"], env=clear_env, check=False, capture_output=False)
+        logger.error("Nuking the K8s namespace to clear potentially corrupted state...")
+        run_cmd(["make", "k8s-kill-scenario"], env=clear_env, check=False, capture_output=False)
         sys.exit(1)
 
-def get_agent_pods() -> list[str]:
+def get_agent_pods() -> dict[str, str]:
     result = run_cmd(["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "get", "pods", "-n", "aegis-system", "-l", "app.kubernetes.io/component=agent", "-o", "json"])
     data = json.loads(result.stdout)
-    pods = [item["metadata"]["name"] for item in data.get("items", []) if "deletionTimestamp" not in item["metadata"]]
+    pods = {}
+    for item in data.get("items", []):
+        if "deletionTimestamp" not in item["metadata"]:
+            pod_name = item["metadata"]["name"]
+            node_name = item["spec"].get("nodeName", "")
+            pods[pod_name] = node_name
     return pods
 
 
@@ -316,7 +330,7 @@ def wait_for_fsm_creation(worker_id: str, error_type: str, expected_corr_id: str
     timeout_s = timeout_ms / 1000.0
     start_time = time.time()
     while True:
-        etcd_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "get", f"aegis:cp:worker:state:{worker_id}:{error_type}", "--print-value-only"]
+        etcd_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "get", f"aegis:cp:state:worker:{worker_id}:{error_type}", "--print-value-only"]
         res = run_cmd(etcd_cmd, check=False, capture_output=True)
         if res.returncode == 0 and res.stdout.strip():
             try:
@@ -336,7 +350,7 @@ def poll_for_fsm_state(worker_id: str, error_type: str, expected_state: str, tim
     timeout_s = timeout_ms / 1000.0
     start_time = time.time()
     while True:
-        etcd_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "get", f"aegis:cp:worker:state:{worker_id}:{error_type}", "--print-value-only"]
+        etcd_cmd = ["mise", "exec", "--", "kubectl", "--context", "kind-aegis-scenario", "exec", "-n", "aegis-system", "aegis-etcd-0", "--", "etcdctl", "get", f"aegis:cp:state:worker:{worker_id}:{error_type}", "--print-value-only"]
         res = run_cmd(etcd_cmd, check=False, capture_output=True)
         if res.returncode == 0 and res.stdout.strip():
             try:
@@ -510,7 +524,7 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
                     logger.info(f"[Stage {idx}] Targeting exactly {len(targets)} agents from previous stage '{target_ref_id}' for fault '{mode}'.")
                 else:
                     target_count = stage.get("target_count", 1)
-                    targets = random.sample(agent_pods, min(target_count, len(agent_pods)))
+                    targets = random.sample(list(agent_pods.keys()), min(target_count, len(agent_pods)))
                     logger.info(f"[Stage {idx}] Targeting {len(targets)} random agents for fault '{mode}'.")
                 
                 stage_groups[stage_id] = targets
@@ -524,7 +538,7 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
                 if wait_ms and corr_id:
                     logger.info(f"[Stage {idx}] Waiting for FSM to be started/initialized (timeout: {wait_ms}ms)...")
                     for pod in targets:
-                        worker_id = f"aegis-system--{pod}"
+                        worker_id = agent_pods[pod]
                         incident_id = wait_for_fsm_creation(worker_id, mode, corr_id, wait_ms)
                         if not incident_id:
                             raise RuntimeError(f"Timeout waiting for FSM creation for worker '{worker_id}' with expected correlation_id '{corr_id}'")
@@ -554,7 +568,7 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
                 if stage.get("inject_incident_id", False):
                     # We just take the first pod from the target group
                     pod = targets[0]
-                    worker_id = f"aegis-system--{pod}"
+                    worker_id = agent_pods[pod]
                     error_type = stage.get("error_type", "latency_spike")
                     wait_ms = stage.get("wait_for_fsm_creation_timeout_ms", 0)
                     
@@ -587,7 +601,7 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
                 logger.info(f"[Stage {idx}] Waiting up to {timeout_str} for {len(targets)} targets to reach state '{expected_state}'...")
                 
                 for pod in targets:
-                    worker_id = f"aegis-system--{pod}"
+                    worker_id = agent_pods[pod]
                     success = poll_for_fsm_state(worker_id, error_type, expected_state, timeout_ms)
                     if not success:
                         raise RuntimeError(f"Timeout waiting for worker '{worker_id}' to reach state '{expected_state}'")
@@ -613,7 +627,7 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
                 run_cmd(["mise", "exec", "--", "make", "cli-build"], check=True, capture_output=False)
                 
                 for pod in targets:
-                    worker_id = f"aegis-system--{pod}"
+                    worker_id = agent_pods[pod]
                     
                     cmd = [
                         "./bin/aegis", "resolve"
@@ -710,11 +724,14 @@ def run_scenario(scenario_def: dict, args: argparse.Namespace) -> None:
             logger.warning(f"[Stage {idx}] Exception occurred but continue_on_err=True. Continuing.")
 
     if aborting:
-        logger.error("Scenario execution aborted due to errors.")
-        sys.exit(1)
+        raise RuntimeError("Scenario execution aborted due to errors.")
         
     logger.info("Scenario execution complete.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        sys.exit(1)

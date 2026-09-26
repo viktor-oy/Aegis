@@ -70,7 +70,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	etcdUrls := os.Getenv("AEGIS_ETCD_URLS")
+	etcdUrls := os.Getenv("AEGIS_ETCD_ENDPOINTS")
 	if etcdUrls == "" {
 		etcdUrls = "http://localhost:2379"
 	}
@@ -256,8 +256,8 @@ func heartbeatLoop(ctx context.Context, cp *server.ControlPlane) {
 			return
 
 		case <-heartbeatTimer.C:
-			now := time.Now().UTC()
-			if err := cp.ExpireHeartbeats(ctx, now); err != nil {
+			monotonicNow := time.Now()
+			if err := cp.ExpireHeartbeats(ctx, monotonicNow); err != nil {
 				slog.Error("heartbeat expiry error", "component", "HEARTBEAT_WORKER", "event", "EXPIRY_ERR", "error", err)
 			}
 
@@ -345,7 +345,7 @@ func fsmConsumerLoop(ctx context.Context, consumer *incident.FSMConsumer, broker
 			defer reader.Close()
 
 			for {
-				m, err := reader.ReadMessage(ctx)
+				m, err := reader.FetchMessage(ctx)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
@@ -354,8 +354,16 @@ func fsmConsumerLoop(ctx context.Context, consumer *incident.FSMConsumer, broker
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
-				if err := consumer.ConsumeEvent(ctx, m.Topic, m.Partition, m.Offset, m.Value); err != nil {
-					slog.Error("consume event error", "component", "FSM_CONSUMER", "event", "CONSUME_ERR", "topic", m.Topic, "error", err)
+				for {
+					if err := consumer.ConsumeEvent(ctx, m.Topic, m.Partition, m.Offset, m.Value); err != nil {
+						slog.Error("consume event error. Retrying in 5s...", "component", "FSM_CONSUMER", "event", "CONSUME_ERR", "topic", m.Topic, "error", err)
+						time.Sleep(5 * time.Second)
+						continue
+					}
+					break
+				}
+				if err := reader.CommitMessages(ctx, m); err != nil {
+					slog.Error("Failed to commit kafka offset", "component", "KAFKA", "event", "COMMIT_ERR", "topic", t, "error", err)
 				}
 			}
 		}(topic)

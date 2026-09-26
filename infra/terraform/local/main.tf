@@ -29,17 +29,29 @@ resource "kind_cluster" "aegis" {
     ]
     node {
       role = "control-plane"
+      extra_mounts {
+        host_path      = pathexpand("~/.aegis-ollama-cache")
+        container_path = "/root/.ollama"
+      }
     }
 
     dynamic "node" {
       for_each = range(var.node_count > 1 ? var.node_count - 1 : 0)
       content {
         role = "worker"
+        extra_mounts {
+          host_path      = pathexpand("~/.aegis-ollama-cache")
+          container_path = "/root/.ollama"
+        }
       }
     }
   }
 }
 
+# Hack / Gotcha (inotify limits): We run ~15 microservices concurrently during testing, so Tilt tries to stream logs for all of them at once. 
+# This instantly blows past the default Linux fs.inotify.max_user_instances limit (128) on the Kind node.
+# Instead of forcing everyone to manually bump sysctl limits on their Mac or Docker VM, this provisioner sneaks in a dynamic sysctl hack 
+# directly inside the Kind node container before handing off to Tilt.
 resource "null_resource" "inotify_hack" {
   depends_on = [kind_cluster.aegis]
   triggers = {
@@ -48,7 +60,7 @@ resource "null_resource" "inotify_hack" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      docker ps -q -f name="^$${kind_cluster.aegis.name}-" | xargs -I {} docker exec {} sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
+      docker ps -q -f name="^${kind_cluster.aegis.name}-" | xargs -I {} docker exec {} sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
     EOT
   }
 }
@@ -82,7 +94,7 @@ resource "null_resource" "registry_setup" {
       echo "Annotating nodes for local registry discovery..."
       cluster_name="${terraform.workspace == "default" ? "aegis" : "aegis-${terraform.workspace}"}"
       for node in $(kind get nodes --name "$cluster_name"); do
-        kubectl annotate node "$node" tilt.dev/registry=localhost:5001 --overwrite
+        kubectl --context "kind-$cluster_name" annotate node "$node" tilt.dev/registry=localhost:5001 --overwrite
       done
     EOT
   }

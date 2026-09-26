@@ -54,7 +54,7 @@ make cli ARGS="resolve aegis-agent-h67rc latency_spike --usecase=scenario"
 
 touch services/agent/main.py
 
-make scenario FILE=scripts/scenario-runner/examples/fsm_corruption.yaml
+make scenario FILE=scripts/scenario-runner/examples/corrupt-fsm.yaml
 
 make cli ARGS="resolve aegis-system--aegis-agent-h67rc  missed_heartbeat --usecase=scenario --force"
 

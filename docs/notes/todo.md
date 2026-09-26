@@ -20,15 +20,13 @@ A brief table or summary of the metrics exactly before the crash. Elite teams do
 - scenario runner advanced stages: Redis Split-Brain / CP Partitioning (test lease expiry) and Kafka Broker Drops (test producer retries)
 - prefix hashring DB lease keys with "aegis:" and exclude the hashring DB lease keys from wipe_infra_state
 
-ORGANIZE
-===
-- refactor sink service to use two in-process Kafka consumer instances with separate group IDs (e.g., `aegis-sink-file` and `aegis-sink-email`) instead of a composite program loop over sink adapters. Weakness of current program loop: a failure or timeout in an external dependency (like SMTP email) prevents clean offset commitment, causing duplicate file sink writes on retry and coupling independent destinations into a single failure domain.
-- CRITICAL: monotonic clock and safety with telemetry timestamp(used by priority queue) provided by agents
-
-- poor quality code: tracker saves an array of workers and also has a priority queue containing worker info. This is too stateful and could contain stale worker data because k8s could restart worker(deamonsets) with a different podname at anytime and the tracker will not know. This can cause unnecessary missed heartbeat events/fsm for deliberately(manually or by k8s) deleted pods. Hashring is safe from this, because it does not store workerID, it only stores CP data and it constantly rebuilds the hashring with redis leases refreshed by CP. Redirect could be watched to purge those states but that might not be enough
 
 CLASSIFY
 ===
+- sanitizing special chars out of various IDs might be a good idea e.g. etcd keys use ":" for key formatting(as a separator), hence ":" in  IDs used to construct etcd keys might cause issues like key splitting bugs and injection vulns
+
+- refactor sink service to use two in-process Kafka consumer instances with separate group IDs (e.g., `aegis-sink-file` and `aegis-sink-email`) instead of a composite program loop over sink adapters. Weakness of current program loop: a failure or timeout in an external dependency (like SMTP email) prevents clean offset commitment, causing duplicate file sink writes on retry and coupling independent destinations into a single failure domain.
+- tracker saves an array of workers and also has a priority queue containing worker info. This seems too stateful and could contain stale worker data because k8s could restart worker(deamonsets) with a different podname at anytime and the tracker will not know. This can cause unnecessary missed heartbeat events/fsm for deliberately(manually or by k8s) deleted pods. Hashring is safe from this, because it does not store workerID, it only stores CP data and it constantly rebuilds the hashring with redis leases refreshed by CP. Redirect could be watched to purge those states but that might not be enough
 - IMPORTANT: consistent hash type?
 - FSM versioning. Also acts as a more rigid approach to detecting stale events.
 - tombstone feature in composer and sink to avoid those services processing staleevents and sending obsolete notification. But without concepts(e.g. FSM) from CP bleeding into those services i.e. they should know little and avoid being too stateful.

@@ -27,8 +27,28 @@ infra_ports = {
 # Build the AI Server — model is parameterized via OLLAMA_MODEL env var / build arg (default: qwen2.5:0.5b).
 # Can be overridden via environment variable (e.g. `OLLAMA_MODEL=llama3.2:1b tilt up`) or by manually editing this file.
 # On Apple Silicon, Ollama automatically uses Metal GPU acceleration.
+#
+# Uses custom_build with a fixed tag to avoid Tilt's per-session hash churn.
+# The build script checks if the image already exists in the local registry before building,
+# preventing unnecessary ~350MB model re-downloads when nothing in the Dockerfile has changed.
 ollama_model = os.getenv('OLLAMA_MODEL', 'qwen2.5:0.5b')
-docker_build('aegis-llm', 'infra/docker/llm', build_args={'OLLAMA_MODEL': ollama_model})
+custom_build(
+    'aegis-llm',
+    """set -e;
+TAG="localhost:5001/aegis-llm:stable-%s";
+if docker manifest inspect "$TAG" > /dev/null 2>&1; then
+  echo "[aegis-llm] Image already exists in registry, skipping build.";
+  docker tag "$TAG" "$EXPECTED_REF";
+  docker push "$EXPECTED_REF";
+else
+  echo "[aegis-llm] Building image...";
+  docker build -t "$EXPECTED_REF" -t "$TAG" infra/docker/llm --build-arg OLLAMA_MODEL=%s;
+  docker push "$EXPECTED_REF";
+  docker push "$TAG";
+fi""" % (ollama_model.replace(':', '-'), ollama_model),
+    deps=['infra/docker/llm/Dockerfile', 'infra/docker/llm/entrypoint.sh'],
+    skips_local_docker=False,
+)
 
 # Run helm dependency update only when Chart.yaml changes (covers fresh setup and version bumps
 # without blocking every Tiltfile reload on a slow network round-trip).
@@ -89,7 +109,7 @@ local_resource(
     'init-kafka',
     cmd='make init-kafka',
     env={'AEGIS_KUBE_CONTEXT': kube_context, 'AEGIS_KAFKA_BROKER_ADDR': '127.0.0.1:' + str(infra_ports['kafka_bootstrap'])},
-    resource_deps=['aegis-kafka-controller', 'kafka-pf-bootstrap'],
+    resource_deps=['aegis-kafka-controller', 'kafka-pf-bootstrap', 'kafka-pf-0', 'kafka-pf-1', 'kafka-pf-2'],
     labels=['infra'],
 )
     

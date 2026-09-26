@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
+
 	"strings"
 	"time"
 
@@ -46,14 +46,14 @@ func (s *EtcdStore) Refresh(ctx context.Context, member hashring.Member, ttl tim
 		return err
 	}
 
-	key := fmt.Sprintf("cp:active_members/%s", member.ID)
+	key := fmt.Sprintf("aegis:cp:chashring:active_members/%s", member.ID)
 	_, err = s.client.Put(ctx, key, string(memberJSON), clientv3.WithLease(leaseResp.ID))
 	return err
 }
 
 func (s *EtcdStore) ActiveMembers(ctx context.Context, now time.Time) ([]hashring.Member, error) {
 	// Fetch all keys with prefix `cp:active_members/`
-	resp, err := s.client.Get(ctx, "cp:active_members/", clientv3.WithPrefix())
+	resp, err := s.client.Get(ctx, "aegis:cp:chashring:active_members/", clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (s *EtcdStore) ActiveMembers(ctx context.Context, now time.Time) ([]hashrin
 }
 
 func (s *EtcdStore) AcquireFSMLock(ctx context.Context, workerID string, errorType string, incidentID string, ttl time.Duration) (bool, error) {
-	key := fmt.Sprintf("aegis:fsm:lock:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:fsm:lock:%s:%s", workerID, errorType)
 
 	// Create a lease for the TTL
 	leaseResp, err := s.client.Grant(ctx, int64(ttl.Seconds()))
@@ -95,7 +95,7 @@ func (s *EtcdStore) AcquireFSMLock(ctx context.Context, workerID string, errorTy
 }
 
 func (s *EtcdStore) ReleaseFSMLock(ctx context.Context, workerID string, errorType string, incidentID string) error {
-	key := fmt.Sprintf("aegis:fsm:lock:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:fsm:lock:%s:%s", workerID, errorType)
 
 	txn := s.client.Txn(ctx).
 		If(clientv3.Compare(clientv3.Value(key), "=", incidentID)).
@@ -106,7 +106,7 @@ func (s *EtcdStore) ReleaseFSMLock(ctx context.Context, workerID string, errorTy
 }
 
 func (s *EtcdStore) SetWorkerState(ctx context.Context, state WorkerState, topic string, partition int, offset int64) error {
-	key := fmt.Sprintf("aegis:cp:worker:state:%s:%s", state.WorkerID, state.ErrorType)
+	key := fmt.Sprintf("aegis:cp:state:worker:%s:%s", state.WorkerID, state.ErrorType)
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -114,7 +114,7 @@ func (s *EtcdStore) SetWorkerState(ctx context.Context, state WorkerState, topic
 
 	// If it's a Kafka event, enforce fencing
 	if topic != "" {
-		fencingKey := fmt.Sprintf("aegis:fencing:%s:%d", topic, partition)
+		fencingKey := fmt.Sprintf("aegis:cp:state:fencing:%s:%d", topic, partition)
 		offsetStr := fmt.Sprintf("%020d", offset) // zero-pad to 20 digits for lexicographical comparison
 
 		getResp, err := s.client.Get(ctx, fencingKey)
@@ -143,10 +143,9 @@ func (s *EtcdStore) SetWorkerState(ctx context.Context, state WorkerState, topic
 		// It exists, compare lexicographically in Go, then enforce in Txn via ModRevision
 		storedOffsetStr := string(getResp.Kvs[0].Value)
 		modRev := getResp.Kvs[0].ModRevision
-		storedOffset, _ := strconv.ParseInt(storedOffsetStr, 10, 64)
 
-		if offset <= storedOffset {
-			return fmt.Errorf("fencing token rejected: incoming offset %d is not greater than stored offset %d", offset, storedOffset)
+		if offsetStr <= storedOffsetStr {
+			return fmt.Errorf("fencing token rejected: incoming offset %d is not greater than stored offset for partition %d", offset, partition)
 		}
 
 		// Execute Txn ensuring ModRevision hasn't changed
@@ -172,7 +171,7 @@ func (s *EtcdStore) SetWorkerState(ctx context.Context, state WorkerState, topic
 }
 
 func (s *EtcdStore) GetWorkerState(ctx context.Context, workerID string, errorType string) (*WorkerState, error) {
-	key := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errorType)
 	resp, err := s.client.Get(ctx, key)
 	if err != nil {
 		return nil, err
@@ -188,13 +187,13 @@ func (s *EtcdStore) GetWorkerState(ctx context.Context, workerID string, errorTy
 }
 
 func (s *EtcdStore) DeleteWorkerState(ctx context.Context, workerID string, errorType string) error {
-	key := fmt.Sprintf("aegis:cp:worker:state:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:worker:%s:%s", workerID, errorType)
 	_, err := s.client.Delete(ctx, key)
 	return err
 }
 
 func (s *EtcdStore) ListActiveWorkerStates(ctx context.Context) ([]WorkerState, error) {
-	resp, err := s.client.Get(ctx, "aegis:cp:worker:state:", clientv3.WithPrefix())
+	resp, err := s.client.Get(ctx, "aegis:cp:state:worker:", clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
@@ -210,13 +209,13 @@ func (s *EtcdStore) ListActiveWorkerStates(ctx context.Context) ([]WorkerState, 
 }
 
 func (s *EtcdStore) SetDLQMarker(ctx context.Context, workerID string, errorType string, markerData string) error {
-	key := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errorType)
 	_, err := s.client.Put(ctx, key, markerData)
 	return err
 }
 
 func (s *EtcdStore) GetDLQMarker(ctx context.Context, workerID string, errorType string) (string, error) {
-	key := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errorType)
 	resp, err := s.client.Get(ctx, key)
 	if err != nil {
 		return "", err
@@ -228,13 +227,13 @@ func (s *EtcdStore) GetDLQMarker(ctx context.Context, workerID string, errorType
 }
 
 func (s *EtcdStore) DeleteDLQMarker(ctx context.Context, workerID string, errorType string) error {
-	key := fmt.Sprintf("aegis:cp:dlq:corrupt:%s:%s", workerID, errorType)
+	key := fmt.Sprintf("aegis:cp:state:dlq:corrupt:%s:%s", workerID, errorType)
 	_, err := s.client.Delete(ctx, key)
 	return err
 }
 
 func (s *EtcdStore) ListDLQMarkers(ctx context.Context) ([]string, error) {
-	resp, err := s.client.Get(ctx, "aegis:cp:dlq:corrupt:", clientv3.WithPrefix())
+	resp, err := s.client.Get(ctx, "aegis:cp:state:dlq:corrupt:", clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +246,7 @@ func (s *EtcdStore) ListDLQMarkers(ctx context.Context) ([]string, error) {
 }
 
 func (s *EtcdStore) DeferEvent(ctx context.Context, workerID string, errorType string, eventType string, payload []byte, ttl time.Duration) error {
-	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	key := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errorType, eventType)
 
 	leaseResp, err := s.client.Grant(ctx, int64(ttl.Seconds()))
 	if err != nil {
@@ -259,7 +258,7 @@ func (s *EtcdStore) DeferEvent(ctx context.Context, workerID string, errorType s
 }
 
 func (s *EtcdStore) GetDeferredEvent(ctx context.Context, workerID string, errorType string, eventType string) ([]byte, error) {
-	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	key := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errorType, eventType)
 	resp, err := s.client.Get(ctx, key)
 	if err != nil {
 		return nil, err
@@ -271,13 +270,13 @@ func (s *EtcdStore) GetDeferredEvent(ctx context.Context, workerID string, error
 }
 
 func (s *EtcdStore) DeleteDeferredEvent(ctx context.Context, workerID string, errorType string, eventType string) error {
-	key := fmt.Sprintf("aegis:defer:%s:%s:%s", workerID, errorType, eventType)
+	key := fmt.Sprintf("aegis:cp:state:defer:%s:%s:%s", workerID, errorType, eventType)
 	_, err := s.client.Delete(ctx, key)
 	return err
 }
 
 func (s *EtcdStore) ScanExpiringDeferredEvents(ctx context.Context, tolerance time.Duration) ([]WorkerState, error) {
-	resp, err := s.client.Get(ctx, "aegis:defer:", clientv3.WithPrefix())
+	resp, err := s.client.Get(ctx, "aegis:cp:state:defer:", clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
@@ -298,10 +297,15 @@ func (s *EtcdStore) ScanExpiringDeferredEvents(ctx context.Context, tolerance ti
 
 		ttl := time.Duration(timeToLiveResp.TTL) * time.Second
 		if ttl >= 0 && ttl < tolerance {
-			parts := strings.Split(key, ":")
-			if len(parts) >= 5 {
-				workerID := parts[2]
-				errorType := parts[3]
+			prefix := "aegis:cp:state:defer:"
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			remainder := strings.TrimPrefix(key, prefix)
+			parts := strings.SplitN(remainder, ":", 3)
+			if len(parts) >= 2 {
+				workerID := parts[0]
+				errorType := parts[1]
 				states = append(states, WorkerState{
 					WorkerID:  workerID,
 					ErrorType: errorType,

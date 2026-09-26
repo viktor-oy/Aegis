@@ -132,6 +132,20 @@ tf-destroy-all: tf-down test-tf-down scenario-tf-down
 
 tf-kill-all: tf-kill test-tf-kill scenario-tf-kill
 
+k8s-kill:
+	@echo "\033[31mNuking aegis-system namespace in local cluster to clear potentially corrupted state...\033[0m"
+	@mise exec -- kubectl --context kind-aegis delete namespace aegis-system --force --grace-period=0
+
+k8s-kill-scenario:
+	@echo "\033[31mNuking aegis-system namespace in scenario cluster to clear potentially corrupted state...\033[0m"
+	@mise exec -- kubectl --context kind-aegis-scenario delete namespace aegis-system --force --grace-period=0
+
+k8s-kill-intg-test:
+	@echo "\033[31mNuking aegis-system namespace in intg-test cluster to clear potentially corrupted state...\033[0m"
+	@mise exec -- kubectl --context kind-aegis-intg-test delete namespace aegis-system --force --grace-period=0
+
+k8s-kill-all: k8s-kill k8s-kill-intg-test k8s-kill-scenario
+
 
 # ==========================================
 # === TILT WORKLOADS =======================
